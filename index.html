@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>WebChat</title>
+    <link rel="icon" type="image/png" href="MicrosoftTeams-image-45-1.png">
+    <link rel="apple-touch-icon" href="MicrosoftTeams-image-45-1.png">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, sans-serif; }
         .hidden { display: none !important; }
@@ -60,16 +62,17 @@
         .user-card strong { font-size: 17px; }
 
         .fab-btn {
-            position: absolute; bottom: 30px; right: 25px;
-            width: 56px; height: 56px; background: #0084ff;
+            position: static;
+            width: 42px; height: 42px; background: #0084ff;
             border-radius: 50%; display: flex; align-items: center;
-            justify-content: center; box-shadow: 0 4px 12px rgba(0,132,255,0.4);
+            justify-content: center; box-shadow: 0 3px 10px rgba(0,132,255,0.28);
             cursor: pointer; z-index: 1001; transition: 0.2s;
+            flex: 0 0 auto;
         }
-        .fab-btn svg { width: 28px; height: 28px; fill: white; }
+        .fab-btn svg { width: 22px; height: 22px; fill: white; }
 
         .search-popup {
-            position: fixed; bottom: 100px; right: 25px;
+            position: fixed; top: 82px; right: 16px;
             background: white; padding: 20px; border-radius: 20px;
             box-shadow: 0 8px 30px rgba(0,0,0,0.15); width: 280px; z-index: 1002;
         }
@@ -77,10 +80,11 @@
         #chat-screen {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
             background: white; display: flex; flex-direction: column;
-            z-index: 2000; transform: translateX(100%); transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            z-index: 2000; transform: translateY(18px) scale(0.94); opacity: 0;
+            transition: transform 0.26s cubic-bezier(0.2, 0.9, 0.2, 1), opacity 0.22s ease, visibility 0.22s ease;
             visibility: hidden; pointer-events: none;
         }
-        #chat-screen.active { transform: translateX(0); visibility: visible; pointer-events: auto; }
+        #chat-screen.active { transform: translateY(0) scale(1); opacity: 1; visibility: visible; pointer-events: auto; }
         .chat-header { padding: 10px 15px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; background: #fff; }
         .back-btn { font-size: 24px; cursor: pointer; background: none; border: none; color: #0084ff; padding: 5px; }
         .chat-header img { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; }
@@ -99,6 +103,20 @@
 
         .modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 25px; border-radius: 15px; box-shadow: 0 0 50px rgba(0,0,0,0.3); z-index: 3000; width: 320px; text-align: center; }
         .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 1000; }
+        .change-pass-btn { background: #e7f3ff; color: #0084ff; margin-top: 10px; }
+        .profile-password-panel { margin-top: 6px; }
+        .profile-pic-edit { width: 82px; height: 82px; margin: 0 auto 14px; position: relative; cursor: pointer; }
+        .profile-pic-edit img { width: 82px; height: 82px; border-radius: 50%; object-fit: cover; background: #eef2f6; border: 3px solid #e7f3ff; }
+        .profile-pic-edit span { position: absolute; right: 0; bottom: 2px; background: #0084ff; color: white; border-radius: 999px; font-size: 11px; padding: 4px 7px; font-weight: 700; }
+        .app-dialog { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(0,0,0,0.32); z-index: 5000; padding: 20px; }
+        .app-dialog-box { width: min(320px, 92vw); background: #fff; border-radius: 16px; padding: 22px; text-align: center; box-shadow: 0 18px 50px rgba(0,0,0,0.24); animation: dialogIn 0.2s ease; }
+        .app-dialog-box h3 { font-size: 18px; margin-bottom: 8px; }
+        .app-dialog-box p { color: #333; line-height: 1.4; margin-bottom: 18px; }
+        .app-dialog-actions { display: flex; gap: 10px; }
+        .app-dialog-actions button { flex: 1; padding: 11px; border: none; border-radius: 9px; cursor: pointer; font-weight: 800; }
+        .dialog-ok { background: #0084ff; color: white; }
+        .dialog-cancel { background: #eef0f3; color: #111; }
+        @keyframes dialogIn { from { opacity: 0; transform: translateY(12px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
         .msg-options { display: flex; justify-content: space-around; margin-top: 10px; }
         .opt-btn { font-size: 12px; color: #0084ff; cursor: pointer; font-weight: bold; }
@@ -119,22 +137,36 @@
         .admin-screen-title h2 { font-size: 20px; line-height: 1.2; }
         .admin-screen-title small { color: #65676b; }
         .admin-user-list { flex: 1; overflow-y: auto; padding: 14px; display: grid; gap: 12px; align-content: start; text-align: left; }
-        .admin-user-card { border: 1px solid #dce8f5; border-radius: 12px; padding: 14px; background: #fff; box-shadow: 0 6px 18px rgba(0,0,0,0.04); }
-        .admin-user-top { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+        .admin-user-card { border: 1px solid #dce8f5; border-radius: 12px; padding: 14px; background: #fff; box-shadow: 0 6px 18px rgba(0,0,0,0.04); cursor: pointer; }
+        .admin-user-card.expanded { border-color: #0084ff; background: #f8fcff; }
+        .admin-user-top { display: flex; align-items: center; gap: 12px; }
+        .admin-user-top .admin-user-remove { display: none; margin-left: auto; }
+        .admin-user-card.expanded .admin-user-top .admin-user-remove { display: inline-block; }
         .admin-user-avatar { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: #e9eef5; }
         .admin-user-card strong { display: block; margin-bottom: 2px; font-size: 16px; }
         .admin-user-card small { color: #65676b; overflow-wrap: anywhere; }
-        .admin-user-details { background: #f7fbff; border: 1px solid #e0efff; border-radius: 10px; padding: 10px; display: grid; gap: 4px; }
+        .admin-user-details { background: #f7fbff; border: 1px solid #e0efff; border-radius: 10px; padding: 10px; display: grid; gap: 4px; margin-top: 10px; }
         .admin-user-actions { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; margin-top: 10px; }
         .admin-user-actions input { margin: 0; min-width: 0; padding: 9px; }
-        .admin-remove-row { display: flex; justify-content: flex-end; margin-top: 8px; }
+        .admin-user-extra { display: none; }
+        .admin-user-card.expanded .admin-user-extra { display: block; }
         .danger-btn { background: #ff4757; }
+        .permission-note {
+            display: flex; align-items: center; justify-content: space-between; gap: 8px;
+            color: #65676b; text-align: left; font-size: 12px; margin: -2px 2px 10px;
+        }
+        .note-copy-btn {
+            border: none; border-radius: 7px; background: #e7f3ff; color: #0084ff;
+            padding: 5px 8px; font-size: 11px; font-weight: 700; cursor: pointer;
+        }
+        .permission-copy-group { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+        .permission-phone { color: #0084ff; font-weight: 700; }
 
         @media (min-width: 720px) {
             body { background: #eef1f5; }
             #home-screen { width: min(420px, 100%); margin: 0 auto; box-shadow: 0 0 30px rgba(0,0,0,0.08); background: white; }
-            #chat-screen { width: min(420px, 100%); left: 50%; transform: translate(120vw, 0); }
-            #chat-screen.active { transform: translate(-50%, 0); }
+            #chat-screen { width: min(420px, 100%); left: 50%; transform: translate(-50%, 18px) scale(0.94); }
+            #chat-screen.active { transform: translate(-50%, 0) scale(1); }
             #admin-users-screen { width: min(420px, 100%); left: 50%; right: auto; transform: translate(120vw, 0); box-shadow: 0 0 30px rgba(0,0,0,0.08); }
             #admin-users-screen.active { transform: translate(-50%, 0); }
         }
@@ -155,7 +187,7 @@
                     <div class="password-wrap">
                         <input type="password" id="l-pass" placeholder="Password">
                         <button class="eye-btn" type="button" onclick="togglePassword('l-pass', this)" aria-label="Show password">
-                            <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                            <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.8 10.8 0 0 1 12 20C5.5 20 2 12 2 12a18.2 18.2 0 0 1 4.06-5.94"/><path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c6.5 0 10 8 10 8a18.4 18.4 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><path d="M3 3l18 18"/></svg>
                         </button>
                     </div>
                     <button class="btn" onclick="login()">Log In</button>
@@ -168,15 +200,28 @@
                         <div class="password-wrap">
                             <input type="password" id="r-pass" placeholder="Password">
                             <button class="eye-btn" type="button" onclick="togglePassword('r-pass', this)" aria-label="Show password">
-                                <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                                <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.8 10.8 0 0 1 12 20C5.5 20 2 12 2 12a18.2 18.2 0 0 1 4.06-5.94"/><path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c6.5 0 10 8 10 8a18.4 18.4 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><path d="M3 3l18 18"/></svg>
+                            </button>
+                        </div>
+                        <div class="password-wrap">
+                            <input type="password" id="r-confirm-pass" placeholder="Confirm Password">
+                            <button class="eye-btn" type="button" onclick="togglePassword('r-confirm-pass', this)" aria-label="Show password">
+                                <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.8 10.8 0 0 1 12 20C5.5 20 2 12 2 12a18.2 18.2 0 0 1 4.06-5.94"/><path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c6.5 0 10 8 10 8a18.4 18.4 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><path d="M3 3l18 18"/></svg>
                             </button>
                         </div>
                         <div class="password-wrap">
                             <input type="password" id="permission-code" placeholder="Admin Permission Code">
                             <button class="eye-btn" type="button" onclick="togglePassword('permission-code', this)" aria-label="Show password">
-                                <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+                                <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.8 10.8 0 0 1 12 20C5.5 20 2 12 2 12a18.2 18.2 0 0 1 4.06-5.94"/><path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c6.5 0 10 8 10 8a18.4 18.4 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><path d="M3 3l18 18"/></svg>
                             </button>
                         </div>
+                        <small class="permission-note">
+                            <span>Request code:</span>
+                            <span class="permission-copy-group">
+                                <span class="permission-phone">01747219338</span>
+                                <button class="note-copy-btn" type="button" onclick="copyText('01747219338')">Copy</button>
+                            </span>
+                        </small>
                         <button class="btn" style="background:#25d366" onclick="registerUser()">Create User</button>
                     </div>
                     <p style="margin-top:20px; color:#0084ff; cursor:pointer; font-size:14px;" onclick="toggleView()">Back to Login</p>
@@ -192,14 +237,14 @@
                 <h2 id="my-name-display">My Name</h2>
                 <span class="my-status"><span class="status-dot">●</span> Active now</span>
             </div>
+            <div class="fab-btn" onclick="toggleSearchPopup()" title="Add user">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+            </div>
             <button id="admin-users-btn" class="header-icon-btn hidden" onclick="showAdminUsersModal()" title="View users">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zM8 11c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
             </button>
         </div>
         <div class="user-list" id="user-list-items"></div>
-        <div class="fab-btn" onclick="toggleSearchPopup()">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-        </div>
         <div id="search-popup" class="search-popup hidden">
             <h4>Add New Contact</h4>
             <input type="text" id="search-number" placeholder="Enter phone number..." onclick="event.stopPropagation()">
@@ -233,6 +278,10 @@
 
     <div id="profile-modal" class="modal hidden">
         <h3 style="margin-bottom: 15px;">Edit Profile</h3>
+        <div class="profile-pic-edit" onclick="document.getElementById('edit-pic').click()">
+            <img id="profile-preview" src="" alt="Profile picture">
+            <span>Change</span>
+        </div>
         <div id="admin-code-section" class="admin-code-box hidden">
             <small>Register permission code</small>
             <div class="admin-code-row">
@@ -242,20 +291,29 @@
             <small id="admin-code-timer">Changes every 2 minutes. One code works one time.</small>
         </div>
         <input type="text" id="edit-name" placeholder="Name">
-        <div class="password-wrap">
-            <input type="password" id="edit-pass" placeholder="New Password">
-            <button class="eye-btn" type="button" onclick="togglePassword('edit-pass', this)" aria-label="Show password">
-                <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
-            </button>
+        <button id="change-pass-btn" class="btn change-pass-btn" onclick="showChangePasswordField()">Change Password</button>
+        <div id="profile-password-panel" class="profile-password-panel hidden">
+            <div class="password-wrap">
+                <input type="password" id="edit-pass" placeholder="New Password">
+                <button class="eye-btn" type="button" onclick="togglePassword('edit-pass', this)" aria-label="Show password">
+                    <svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.8 10.8 0 0 1 12 20C5.5 20 2 12 2 12a18.2 18.2 0 0 1 4.06-5.94"/><path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c6.5 0 10 8 10 8a18.4 18.4 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><path d="M3 3l18 18"/></svg>
+                </button>
+            </div>
         </div>
-        <input type="file" id="edit-pic" accept="image/*" style="font-size:12px; margin-top:10px;">
+        <input type="file" id="edit-pic" accept="image/*" class="hidden" onchange="previewProfilePic()">
         <button class="btn" onclick="saveProfile()" style="margin-top:15px;">Save Changes</button>
-        <button class="btn" style="background:#eee; color:#333; margin-top:8px;" onclick="closeProfileModal()">Cancel</button>
-        <button class="btn" style="background:#ff4757; color:white; margin-top:20px;" onclick="logout()">Log Out</button>
+        <button class="btn" style="background:#ff4757; color:white; margin-top:12px;" onclick="confirmLogout()">Log Out</button>
+    </div>
+    <div id="app-dialog" class="app-dialog hidden">
+        <div class="app-dialog-box">
+            <h3 id="dialog-title">Notice</h3>
+            <p id="dialog-message"></p>
+            <div id="dialog-actions" class="app-dialog-actions"></div>
+        </div>
     </div>
     <div id="admin-users-screen">
         <div class="admin-screen-header">
-            <button class="back-btn" onclick="closeAdminUsersModal()">&#8592;</button>
+            <button class="back-btn" onclick="window.history.back()">&#8592;</button>
             <div class="admin-screen-title">
                 <h2>All Users</h2>
                 <small id="admin-user-count">0 users</small>
@@ -287,10 +345,16 @@
         let inboxUsers = [];
         let selectedMsgId = null;
         let activeChatRef = null;
+        let userListRef = null;
         let adminCodeInterval = null;
         let adminUsersRef = null;
+        let notificationRef = null;
+        let notificationReady = false;
+        let selectedAdminUserPhone = null;
+        let seenMessageKeys = new Set();
 
         window.onload = function() {
+            history.replaceState({ screen: "home" }, "");
             const savedUser = localStorage.getItem('messenger_user');
             if(savedUser) {
                 me = JSON.parse(savedUser);
@@ -300,6 +364,81 @@
                 startApp();
             }
         };
+
+        function showAppDialog(message, options = {}) {
+            const dialog = document.getElementById('app-dialog');
+            const title = document.getElementById('dialog-title');
+            const text = document.getElementById('dialog-message');
+            const actions = document.getElementById('dialog-actions');
+            title.innerText = options.title || "WebChat";
+            text.innerText = message;
+            actions.innerHTML = "";
+            dialog.classList.remove('hidden');
+
+            return new Promise(resolve => {
+                const okBtn = document.createElement('button');
+                okBtn.className = "dialog-ok";
+                okBtn.innerText = options.okText || "OK";
+                okBtn.onclick = () => {
+                    dialog.classList.add('hidden');
+                    resolve(true);
+                };
+                if (options.confirm) {
+                    const cancelBtn = document.createElement('button');
+                    cancelBtn.className = "dialog-cancel";
+                    cancelBtn.innerText = options.cancelText || "Cancel";
+                    cancelBtn.onclick = () => {
+                        dialog.classList.add('hidden');
+                        resolve(false);
+                    };
+                    actions.append(cancelBtn, okBtn);
+                } else {
+                    actions.append(okBtn);
+                }
+            });
+        }
+
+        window.alert = message => showAppDialog(String(message));
+
+        function requestNotificationAccess() {
+            if ("Notification" in window && Notification.permission === "default") {
+                Promise.resolve(Notification.requestPermission()).catch(() => {});
+            }
+        }
+
+        function notifyMessage(senderName, text) {
+            if (!("Notification" in window) || Notification.permission !== "granted") return;
+            if (!document.hidden) return;
+            new Notification(senderName || "WebChat", {
+                body: text || "New message",
+                icon: "MicrosoftTeams-image-45-1.png"
+            });
+        }
+
+        function startMessageNotifications() {
+            if (!me || me.isAdmin || notificationRef) return;
+            notificationRef = database.ref('messages');
+            notificationRef.on('value', snap => {
+                const chats = snap.val() || {};
+                Object.keys(chats).forEach(chatID => {
+                    if (!chatID.split('_').includes(me.phone)) return;
+                    const msgs = chats[chatID] || {};
+                    Object.keys(msgs).forEach(id => {
+                        const key = `${chatID}_${id}`;
+                        const msg = msgs[id];
+                        if (seenMessageKeys.has(key)) return;
+                        if (notificationReady && msg.sender !== me.phone) {
+                            database.ref('users/' + msg.sender).once('value', userSnap => {
+                                const sender = userSnap.val();
+                                notifyMessage(sender ? sender.name : "WebChat", msg.text);
+                            });
+                        }
+                        seenMessageKeys.add(key);
+                    });
+                });
+                notificationReady = true;
+            });
+        }
 
         function escapeHtml(value) {
             return String(value || '').replace(/[&<>"']/g, char => ({
@@ -315,14 +454,28 @@
             return me.phone < userPhone ? me.phone + "_" + userPhone : userPhone + "_" + me.phone;
         }
 
-        function generatePermissionCode() {
-            return String(Math.floor(100000 + Math.random() * 900000));
+        function getPermissionWindow() {
+            return Math.floor(Date.now() / 120000);
+        }
+
+        function generatePermissionCode(windowId = getPermissionWindow()) {
+            const secret = "webchat-sihab-admin";
+            let hash = 0;
+            const text = `${secret}-${windowId}`;
+            for (let i = 0; i < text.length; i++) {
+                hash = (hash * 31 + text.charCodeAt(i)) >>> 0;
+            }
+            return String(100000 + (hash % 900000));
         }
 
         function togglePassword(inputId, button) {
             const input = document.getElementById(inputId);
-            input.type = input.type === "password" ? "text" : "password";
-            button.setAttribute("aria-label", input.type === "password" ? "Show password" : "Hide password");
+            const willShow = input.type === "password";
+            input.type = willShow ? "text" : "password";
+            button.setAttribute("aria-label", willShow ? "Hide password" : "Show password");
+            button.innerHTML = willShow
+                ? `<svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>`
+                : `<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.8 10.8 0 0 1 12 20C5.5 20 2 12 2 12a18.2 18.2 0 0 1 4.06-5.94"/><path d="M9.9 4.24A10.8 10.8 0 0 1 12 4c6.5 0 10 8 10 8a18.4 18.4 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><path d="M3 3l18 18"/></svg>`;
         }
 
         function copyText(value) {
@@ -344,39 +497,18 @@
             if (code && code !== "------") copyText(code);
         }
 
-        function ensureAdminPermissionCode() {
-            if (!me || !me.isAdmin) return;
-            const ref = database.ref('admin/permissionCode');
-            ref.once('value', snap => {
-                const data = snap.val();
-                if (!data || data.used || Date.now() >= data.expiresAt) {
-                    ref.set({ code: generatePermissionCode(), expiresAt: Date.now() + 120000, used: false });
-                }
-            });
-        }
-
         function watchAdminPermissionCode() {
             if (!me || !me.isAdmin) return;
-            ensureAdminPermissionCode();
-            database.ref('admin/permissionCode').on('value', snap => {
-                const data = snap.val();
-                document.getElementById('current-admin-code').innerText = data && !data.used ? data.code : "------";
-                if (data && !data.used) {
-                    const seconds = Math.max(0, Math.ceil((data.expiresAt - Date.now()) / 1000));
-                    document.getElementById('admin-code-timer').innerText = `Changes in ${seconds}s. One code works one time.`;
-                }
-            });
+            const updateCode = () => {
+                const windowId = getPermissionWindow();
+                const expiresAt = (windowId + 1) * 120000;
+                const seconds = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000));
+                document.getElementById('current-admin-code').innerText = generatePermissionCode(windowId);
+                document.getElementById('admin-code-timer').innerText = `Changes in ${seconds}s. One code works one time.`;
+            };
+            updateCode();
             clearInterval(adminCodeInterval);
-            adminCodeInterval = setInterval(() => {
-                ensureAdminPermissionCode();
-                database.ref('admin/permissionCode').once('value', snap => {
-                    const data = snap.val();
-                    if (data && !data.used) {
-                        const seconds = Math.max(0, Math.ceil((data.expiresAt - Date.now()) / 1000));
-                        document.getElementById('admin-code-timer').innerText = `Changes in ${seconds}s. One code works one time.`;
-                    }
-                });
-            }, 1000);
+            adminCodeInterval = setInterval(updateCode, 1000);
         }
 
         function setPresence(phone) {
@@ -395,6 +527,7 @@
             if (phone === "sihab" && pass === "sihab@123") {
                 me = { name: "Sihab Admin", phone: "sihab", password: "sihab@123", pic: "", status: "online", isAdmin: true };
                 localStorage.setItem('messenger_user', JSON.stringify(me));
+                requestNotificationAccess();
                 location.reload();
                 return;
             }
@@ -404,6 +537,7 @@
                     me = data;
                     setPresence(me.phone);
                     localStorage.setItem('messenger_user', JSON.stringify(me));
+                    requestNotificationAccess();
                     location.reload();
                 } else alert("Invalid Login!");
             });
@@ -413,6 +547,16 @@
             if (me && !me.isAdmin) database.ref('users/' + me.phone).update({ status: "offline" });
             localStorage.removeItem('messenger_user');
             location.reload();
+        }
+
+        async function confirmLogout() {
+            const ok = await showAppDialog("Are you sure you want to log out?", {
+                title: "Confirm Logout",
+                confirm: true,
+                okText: "Log Out",
+                cancelText: "Stay"
+            });
+            if (ok) logout();
         }
 
         function openAuthPanel() {
@@ -429,9 +573,20 @@
             const name = document.getElementById('r-name').value.trim();
             const phone = document.getElementById('r-phone').value.trim();
             const pass = document.getElementById('r-pass').value;
-            const permissionCode = document.getElementById('permission-code').value;
-            if (!name || !phone || !pass || !permissionCode) {
+            const confirmPass = document.getElementById('r-confirm-pass').value;
+            const permissionCode = document.getElementById('permission-code').value.trim();
+            if (!name || !phone || !pass || !confirmPass || !permissionCode) {
                 alert("Please fill in all fields.");
+                return;
+            }
+            if (pass !== confirmPass) {
+                alert("Password and confirm password do not match!");
+                return;
+            }
+            const permissionWindow = getPermissionWindow();
+            const validCode = generatePermissionCode(permissionWindow);
+            if (permissionCode !== validCode) {
+                alert("Wrong or expired permission code!");
                 return;
             }
             database.ref('users/' + phone).once('value', snap => {
@@ -439,12 +594,16 @@
                     alert("This phone number is already registered.");
                     return;
                 }
-                database.ref('admin/permissionCode').transaction(current => {
-                    if (!current || current.used || current.code !== permissionCode || Date.now() >= current.expiresAt) return;
-                    return { ...current, used: true, usedBy: phone, usedAt: Date.now() };
+                database.ref('admin/usedCodes/' + permissionWindow + '/' + permissionCode).transaction(current => {
+                    if (current) return;
+                    return { usedBy: phone, usedAt: Date.now() };
                 }, (error, committed) => {
-                    if (error || !committed) {
-                        alert("Wrong, expired, or already used permission code!");
+                    if (error) {
+                        alert("Permission code check failed. Firebase database write permission may be blocked.");
+                        return;
+                    }
+                    if (!committed) {
+                        alert("This permission code has already been used!");
                         return;
                     }
                     database.ref('users/' + phone).set({ name, phone, password: pass, pic: "", status: "offline" }).then(() => {
@@ -452,9 +611,10 @@
                         document.getElementById('r-name').value = "";
                         document.getElementById('r-phone').value = "";
                         document.getElementById('r-pass').value = "";
+                        document.getElementById('r-confirm-pass').value = "";
                         document.getElementById('permission-code').value = "";
                         toggleView();
-                    });
+                    }).catch(() => alert("User create failed. Please check Firebase database permission."));
                 });
             });
         }
@@ -465,15 +625,25 @@
             document.getElementById('my-avatar').src = me.pic || fallbackAvatar;
             document.getElementById('my-name-display').innerText = me.name;
             document.getElementById('edit-name').value = me.name || "";
+            requestNotificationAccess();
             document.getElementById('admin-users-btn').classList.toggle('hidden', !me.isAdmin);
             document.getElementById('admin-code-section').classList.toggle('hidden', !me.isAdmin);
             if (me.isAdmin) watchAdminPermissionCode();
+            startMessageNotifications();
             renderUserList();
         }
 
         function toggleSearchPopup() {
-            document.getElementById('search-popup').classList.toggle('hidden');
+            const popup = document.getElementById('search-popup');
+            const willOpen = popup.classList.contains('hidden');
+            popup.classList.toggle('hidden');
             document.getElementById('search-overlay').classList.toggle('hidden');
+            if (willOpen) history.pushState({ screen: "search" }, "");
+        }
+
+        function closeSearchPopup() {
+            document.getElementById('search-popup').classList.add('hidden');
+            document.getElementById('search-overlay').classList.add('hidden');
         }
 
         function searchAndAddUser() {
@@ -486,13 +656,14 @@
                     }
                     document.getElementById('search-number').value = "";
                     toggleSearchPopup();
-                    renderUserList();
                 } else alert("User not found!");
             });
         }
 
         function renderUserList() {
-            database.ref('users').on('value', snap => {
+            if (userListRef) userListRef.off();
+            userListRef = database.ref('users');
+            userListRef.on('value', snap => {
                 const all = snap.val() || {};
                 const list = document.getElementById('user-list-items');
                 list.innerHTML = "";
@@ -517,13 +688,15 @@
 
         function openChat(user) {
             activePeer = user;
+            seenMessageKeys = new Set();
             document.getElementById('chat-screen').classList.add('active');
             document.getElementById('chat-user-name').innerText = user.name;
             document.getElementById('chat-user-img').src = user.pic || fallbackAvatar;
-            window.history.pushState({chat: true}, "");
+            window.history.pushState({ screen: "chat" }, "");
             const chatID = getChatID(user.phone);
             if (activeChatRef) activeChatRef.off();
             activeChatRef = database.ref('messages/' + chatID);
+            let initialLoad = true;
             activeChatRef.on('value', snap => {
                 const box = document.getElementById('msg-box');
                 box.innerHTML = "";
@@ -531,6 +704,11 @@
                 Object.keys(msgs).forEach(id => {
                     const m = msgs[id];
                     const isMe = m.sender === me.phone;
+                    const messageKey = `${chatID}_${id}`;
+                    if (!seenMessageKeys.has(messageKey)) {
+                        if (!initialLoad && !isMe) notifyMessage(activePeer.name, m.text);
+                        seenMessageKeys.add(messageKey);
+                    }
                     if(!isMe && m.status !== 'seen') database.ref('messages/' + chatID + '/' + id).update({status: 'seen'});
                     const statusIcon = isMe ? (m.status === 'seen' ? `<img src="${escapeHtml(activePeer.pic || fallbackAvatar)}" class="seen-img" alt="Seen">` : (m.status === 'delivered' ? "✓✓" : "✓")) : "";
                     const row = document.createElement('div');
@@ -539,6 +717,7 @@
                     row.innerHTML = `<div class="bubble ${isMe ? 'sent' : 'received'}">${escapeHtml(m.text)}</div>${isMe ? `<div class="status-row">${statusIcon}</div>` : ''}`;
                     box.appendChild(row);
                 });
+                initialLoad = false;
                 box.scrollTop = box.scrollHeight;
             });
         }
@@ -556,6 +735,7 @@
             document.getElementById('edit-msg-input').value = text;
             document.getElementById('msg-modal').classList.remove('hidden');
             document.getElementById('overlay').classList.remove('hidden');
+            history.pushState({ screen: "message-actions" }, "");
         }
 
         function confirmEdit() {
@@ -579,8 +759,28 @@
 
         function showProfileModal() {
             document.getElementById('edit-name').value = me.name || "";
+            document.getElementById('edit-pass').value = "";
+            document.getElementById('edit-pic').value = "";
+            document.getElementById('profile-preview').src = me.pic || fallbackAvatar;
+            document.getElementById('profile-password-panel').classList.add('hidden');
+            document.getElementById('change-pass-btn').classList.remove('hidden');
             document.getElementById('profile-modal').classList.remove('hidden');
             document.getElementById('overlay').classList.remove('hidden');
+            history.pushState({ screen: "profile" }, "");
+        }
+
+        function showChangePasswordField() {
+            document.getElementById('profile-password-panel').classList.remove('hidden');
+            document.getElementById('change-pass-btn').classList.add('hidden');
+            document.getElementById('edit-pass').focus();
+        }
+
+        function previewProfilePic() {
+            const file = document.getElementById('edit-pic').files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = e => document.getElementById('profile-preview').src = e.target.result;
+            reader.readAsDataURL(file);
         }
 
         function closeProfileModal() {
@@ -591,6 +791,7 @@
         function showAdminUsersModal() {
             if (!me || !me.isAdmin) return;
             document.getElementById('admin-users-screen').classList.add('active');
+            history.pushState({ screen: "admin-users" }, "");
             if (adminUsersRef) adminUsersRef.off();
             adminUsersRef = database.ref('users');
             adminUsersRef.on('value', snap => renderAdminUserList(snap.val() || {}));
@@ -601,6 +802,15 @@
             if (adminUsersRef) {
                 adminUsersRef.off();
                 adminUsersRef = null;
+            }
+            selectedAdminUserPhone = null;
+        }
+
+        function closeChatScreen() {
+            document.getElementById('chat-screen').classList.remove('active');
+            if (activeChatRef) {
+                activeChatRef.off();
+                activeChatRef = null;
             }
         }
 
@@ -617,6 +827,11 @@
                 const user = users[phone];
                 const card = document.createElement('div');
                 card.className = "admin-user-card";
+                if (selectedAdminUserPhone === phone) card.classList.add('expanded');
+                card.onclick = () => {
+                    selectedAdminUserPhone = selectedAdminUserPhone === phone ? null : phone;
+                    renderAdminUserList(users);
+                };
 
                 const top = document.createElement('div');
                 top.className = "admin-user-top";
@@ -630,7 +845,14 @@
                 const status = document.createElement('small');
                 status.innerText = user.status === "online" ? "Active now" : "Offline";
                 identity.append(name, status);
-                top.append(avatar, identity);
+                const removeBtn = document.createElement('button');
+                removeBtn.className = "mini-btn danger-btn admin-user-remove";
+                removeBtn.innerText = "Remove";
+                removeBtn.onclick = event => {
+                    event.stopPropagation();
+                    removeUser(phone);
+                };
+                top.append(avatar, identity, removeBtn);
 
                 const details = document.createElement('div');
                 details.className = "admin-user-details";
@@ -640,6 +862,8 @@
                 passLine.innerText = `Password: ${user.password || ""}`;
                 details.append(phoneLine, passLine);
 
+                const extra = document.createElement('div');
+                extra.className = "admin-user-extra";
                 const actions = document.createElement('div');
                 actions.className = "admin-user-actions";
 
@@ -650,23 +874,23 @@
                 const changeBtn = document.createElement('button');
                 changeBtn.className = "mini-btn";
                 changeBtn.innerText = "Change";
-                changeBtn.onclick = () => changeUserPassword(phone, passInput.value);
+                changeBtn.onclick = event => {
+                    event.stopPropagation();
+                    changeUserPassword(phone, passInput.value);
+                };
 
                 const copyBtn = document.createElement('button');
                 copyBtn.className = "mini-btn";
                 copyBtn.innerText = "Copy";
-                copyBtn.onclick = () => copyText(user.password || "");
+                copyBtn.onclick = event => {
+                    event.stopPropagation();
+                    copyText(user.password || "");
+                };
 
-                const removeBtn = document.createElement('button');
-                removeBtn.className = "mini-btn danger-btn";
-                removeBtn.innerText = "Remove";
-                removeBtn.onclick = () => removeUser(phone);
-                const removeRow = document.createElement('div');
-                removeRow.className = "admin-remove-row";
-                removeRow.appendChild(removeBtn);
-
+                passInput.onclick = event => event.stopPropagation();
                 actions.append(passInput, changeBtn, copyBtn);
-                card.append(top, details, actions, removeRow);
+                extra.append(details, actions);
+                card.append(top, extra);
                 list.appendChild(card);
             });
         }
@@ -679,14 +903,21 @@
             database.ref('users/' + phone).update({ password: newPassword.trim() }).then(() => alert("Password changed!"));
         }
 
-        function removeUser(phone) {
-            if (!confirm("Remove this user?")) return;
+        async function removeUser(phone) {
+            const ok = await showAppDialog("Remove this user?", {
+                title: "Confirm Remove",
+                confirm: true,
+                okText: "Remove",
+                cancelText: "Cancel"
+            });
+            if (!ok) return;
             database.ref('users/' + phone).remove().then(() => alert("User removed."));
         }
 
         function closeAllModals() {
             closeMsgModal();
             closeProfileModal();
+            closeSearchPopup();
             if (document.getElementById('admin-users-screen').classList.contains('active')) closeAdminUsersModal();
         }
 
@@ -695,9 +926,16 @@
             const pass = document.getElementById('edit-pass').value || me.password;
             const file = document.getElementById('edit-pic').files[0];
             if (me.isAdmin) {
-                me = { ...me, name, password: pass };
-                localStorage.setItem('messenger_user', JSON.stringify(me));
-                location.reload();
+                const saveAdmin = updates => {
+                    me = { ...me, ...updates };
+                    localStorage.setItem('messenger_user', JSON.stringify(me));
+                    location.reload();
+                };
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = e => saveAdmin({ name, password: pass, pic: e.target.result });
+                    reader.readAsDataURL(file);
+                } else saveAdmin({ name, password: pass });
                 return;
             }
             const save = updates => database.ref('users/' + me.phone).update(updates).then(() => {
@@ -713,11 +951,24 @@
         }
 
         window.onpopstate = () => {
-            document.getElementById('chat-screen').classList.remove('active');
-            closeAllModals();
-            if (activeChatRef) {
-                activeChatRef.off();
-                activeChatRef = null;
+            if (!document.getElementById('msg-modal').classList.contains('hidden')) {
+                closeMsgModal();
+                return;
+            }
+            if (!document.getElementById('profile-modal').classList.contains('hidden')) {
+                closeProfileModal();
+                return;
+            }
+            if (!document.getElementById('search-popup').classList.contains('hidden')) {
+                closeSearchPopup();
+                return;
+            }
+            if (document.getElementById('admin-users-screen').classList.contains('active')) {
+                closeAdminUsersModal();
+                return;
+            }
+            if (document.getElementById('chat-screen').classList.contains('active')) {
+                closeChatScreen();
             }
         };
     </script>
