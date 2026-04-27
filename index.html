@@ -130,6 +130,14 @@
 
         .input-bar { padding: 12px 15px 25px; display: flex; gap: 10px; border-top: 1px solid #eee; background: white; }
         .input-bar input { flex: 1; border-radius: 25px; background: #f0f2f5; border: none; padding: 10px 18px; outline: none; font-size: 15px; }
+        .input-bar button[disabled] { opacity: 0.45; cursor: not-allowed; }
+        .request-reply-bar {
+            display: none; gap: 10px; align-items: center; padding: 14px 15px 25px;
+            border-top: 1px solid #eee; background: white; flex-wrap: wrap;
+        }
+        .request-reply-bar.active { display: flex; animation: cardIn 0.2s ease both; }
+        .request-reply-note { width: 100%; color: #65676b; font-size: 13px; text-align: left; }
+        .request-reply-bar .mini-btn { flex: 1; min-height: 42px; }
 
         .modal {
             position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -343,7 +351,12 @@
         <div class="msg-display" id="msg-box"></div>
         <div class="input-bar">
             <input type="text" id="msg-input" placeholder="Aa" onkeypress="if(event.key==='Enter') sendMsg()">
-            <button onclick="sendMsg()" style="border:none; color:#0084ff; font-weight:bold; background:none; cursor:pointer; font-size: 16px;">Send</button>
+            <button id="send-btn" onclick="sendMsg()" style="border:none; color:#0084ff; font-weight:bold; background:none; cursor:pointer; font-size: 16px;">Send</button>
+        </div>
+        <div id="request-reply-bar" class="request-reply-bar">
+            <div class="request-reply-note">Accept korle chat inbox-e add hobe, tarpor message deya jabe.</div>
+            <button class="mini-btn" type="button" onclick="acceptCurrentChatRequest()">Accept</button>
+            <button class="mini-btn danger-btn" type="button" onclick="declineCurrentChatRequest()">Denied</button>
         </div>
     </div>
 
@@ -448,6 +461,7 @@
         let seenMessageKeys = new Set();
         let renderedChatMessages = new Set();
         let pendingRequests = {};
+        let activeChatRequest = null;
 
         window.onload = function() {
             history.replaceState({ screen: "home" }, "");
@@ -804,6 +818,10 @@
                 document.getElementById('request-count-badge').classList.toggle('hidden', requestCount === 0);
                 document.getElementById('request-count-badge').innerText = requestCount;
                 document.getElementById('request-user-count').innerText = `${requestCount} request${requestCount === 1 ? '' : 's'}`;
+                if (activePeer) {
+                    activeChatRequest = pendingRequests[activePeer.phone] ? { ...pendingRequests[activePeer.phone], phone: activePeer.phone } : null;
+                    updateChatReplyState();
+                }
                 if (document.getElementById('request-users-screen').classList.contains('active')) {
                     renderRequestUsers();
                 }
@@ -860,11 +878,13 @@
         }
         function openChat(user) {
             activePeer = user;
+            activeChatRequest = pendingRequests[user.phone] ? { ...pendingRequests[user.phone], phone: user.phone } : null;
             seenMessageKeys = new Set();
             renderedChatMessages = new Set();
             document.getElementById('chat-screen').classList.add('active');
             document.getElementById('chat-user-name').innerText = user.name;
             document.getElementById('chat-user-img').src = user.pic || fallbackAvatar;
+            updateChatReplyState();
             window.history.pushState({ screen: "chat" }, "");
             const chatID = getChatID(user.phone);
             if (activeChatRef) activeChatRef.off();
@@ -902,6 +922,10 @@
         async function sendMsg() {
             const input = document.getElementById('msg-input');
             if(!input.value.trim() || !activePeer) return;
+            if (activeChatRequest) {
+                alert("First accept this request, then you can message.");
+                return;
+            }
             const text = input.value.trim();
             const chatID = getChatID(activePeer.phone);
             await addInboxContact(me.phone, activePeer.phone);
@@ -1009,10 +1033,23 @@
 
         function closeChatScreen() {
             document.getElementById('chat-screen').classList.remove('active');
+            activeChatRequest = null;
             if (activeChatRef) {
                 activeChatRef.off();
                 activeChatRef = null;
             }
+        }
+
+        function updateChatReplyState() {
+            const inputBar = document.querySelector('#chat-screen .input-bar');
+            const requestBar = document.getElementById('request-reply-bar');
+            const input = document.getElementById('msg-input');
+            const sendBtn = document.getElementById('send-btn');
+            const locked = !!activeChatRequest;
+            inputBar.classList.toggle('hidden', locked);
+            requestBar.classList.toggle('active', locked);
+            input.disabled = locked;
+            sendBtn.disabled = locked;
         }
 
         function renderRequestUsers() {
@@ -1028,6 +1065,7 @@
                 const request = pendingRequests[phone];
                 const card = document.createElement('div');
                 card.className = "admin-user-card expanded";
+                card.onclick = () => openRequestChat(phone, request);
 
                 const top = document.createElement('div');
                 top.className = "admin-user-top";
@@ -1049,24 +1087,26 @@
                 phoneLine.innerText = `Phone: ${request.phone || phone}`;
                 details.append(phoneLine);
 
-                const actions = document.createElement('div');
-                actions.className = "request-actions";
-                const acceptBtn = document.createElement('button');
-                acceptBtn.className = "mini-btn";
-                acceptBtn.innerText = "Accept";
-                acceptBtn.onclick = () => acceptMessageRequest(phone, request);
-                const declineBtn = document.createElement('button');
-                declineBtn.className = "mini-btn danger-btn";
-                declineBtn.innerText = "Decline";
-                declineBtn.onclick = () => declineMessageRequest(phone);
-                actions.append(acceptBtn, declineBtn);
-
                 const extra = document.createElement('div');
                 extra.className = "admin-user-extra";
-                extra.append(details, actions);
+                const note = document.createElement('small');
+                note.innerText = "Tap to open request chat";
+                extra.append(details, note);
                 card.append(top, extra);
                 list.appendChild(card);
             });
+        }
+
+        function openRequestChat(phone, request) {
+            const cached = getCachedUsers();
+            const user = cached[phone] || {
+                name: request.name || phone,
+                phone,
+                pic: request.pic || "",
+                status: request.status || "offline"
+            };
+            closeRequestUsersScreen();
+            openChat(user);
         }
 
         async function acceptMessageRequest(phone, request) {
@@ -1080,12 +1120,31 @@
             setCachedUsers(cached);
             inboxUsers = Array.from(new Set([...inboxUsers, phone]));
             renderContactsFromUsers(cached);
+            activeChatRequest = null;
+            updateChatReplyState();
             closeRequestUsersScreen();
-            openChat(cached[phone]);
+            if (activePeer && activePeer.phone === phone && document.getElementById('chat-screen').classList.contains('active')) {
+                activePeer = cached[phone];
+                document.getElementById('chat-user-name').innerText = activePeer.name;
+                document.getElementById('chat-user-img').src = activePeer.pic || fallbackAvatar;
+            } else {
+                openChat(cached[phone]);
+            }
         }
 
         function declineMessageRequest(phone) {
             database.ref('messageRequests/' + me.phone + '/' + phone).remove();
+        }
+
+        function acceptCurrentChatRequest() {
+            if (!activeChatRequest || !activePeer) return;
+            acceptMessageRequest(activePeer.phone, activeChatRequest);
+        }
+
+        function declineCurrentChatRequest() {
+            if (!activeChatRequest || !activePeer) return;
+            declineMessageRequest(activePeer.phone);
+            closeChatScreen();
         }
 
         function renderAdminUserList(users) {
