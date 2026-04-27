@@ -9,7 +9,7 @@
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Tahoma, sans-serif; }
         .hidden { display: none !important; }
-        body { background: white; height: 100vh; overflow: hidden; }
+        body { background: white; min-height: 100vh; overflow: hidden; }
 
         .auth-container { height: 100vh; display: flex; align-items: center; justify-content: center; background: #f0f2f5; perspective: 1200px; }
         .auth-box {
@@ -63,12 +63,17 @@
         }
         .eye-btn svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 2; }
 
-        #home-screen { display: flex; flex-direction: column; height: 100vh; width: 100%; position: relative; }
-        .home-header { padding: 15px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #f0f0f0; background: #fff; }
+        #home-screen { display: flex; flex-direction: column; height: 100vh; width: 100%; position: relative; background: #fff; }
+        .home-header { padding: max(15px, env(safe-area-inset-top)) 15px 15px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #f0f0f0; background: #fff; }
         .my-info { flex: 1; display: flex; flex-direction: column; justify-content: center; }
         .my-info h2 { font-size: 18px; font-weight: bold; line-height: 1.2; }
         .my-status { font-size: 12px; color: #65676b; }
         .status-dot { color: #31a24c; font-size: 10px; }
+        .inbox-search-wrap { padding: 10px 15px 12px; background: #fff; border-bottom: 1px solid #f3f4f6; }
+        .inbox-search {
+            width: 100%; border: none; border-radius: 16px; background: #f2f5f8;
+            padding: 12px 14px; font-size: 14px; outline: none;
+        }
         .header-icon-btn {
             width: 42px; height: 42px; border: none; border-radius: 50%; background: #e7f3ff;
             color: #0084ff; cursor: pointer; display: grid; place-items: center;
@@ -81,28 +86,46 @@
             display: grid; place-items: center; padding: 0 4px; font-weight: 700;
         }
 
-        .user-list { flex: 1; overflow-y: auto; background: #fff; }
-        .user-card { display: flex; align-items: center; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f9f9f9; }
+        .user-list { flex: 1; overflow-y: auto; background: #fff; padding-bottom: max(88px, calc(env(safe-area-inset-bottom) + 72px)); }
+        .user-card { display: flex; align-items: center; padding: 12px 15px; cursor: pointer; border-bottom: 1px solid #f9f9f9; position: relative; }
         .user-card:active { background: #f0f2f5; }
+        .user-card.unread { background: #f4f9ff; }
+        .user-card.active-chat { background: #edf6ff; }
         .user-card img { width: 55px; height: 55px; border-radius: 50%; margin-right: 15px; object-fit: cover; background: #eee; }
         .user-card strong { font-size: 17px; }
+        .user-card.unread strong { color: #0066d9; }
+        .user-card-meta { min-width: 0; }
+        .user-card-sub { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .user-last-time { color: #9aa4b2; font-size: 11px; }
+        .user-card-right { margin-left: auto; display: flex; align-items: center; justify-content: center; min-width: 24px; }
+        .unread-dot {
+            width: 10px; height: 10px; border-radius: 50%;
+            background: #0084ff; box-shadow: 0 0 0 4px rgba(0,132,255,0.12);
+        }
 
         .fab-btn {
-            position: static;
+            position: fixed; right: 18px; bottom: max(18px, calc(env(safe-area-inset-bottom) + 14px));
             width: 42px; height: 42px; background: #0084ff;
             border-radius: 50%; display: flex; align-items: center;
             justify-content: center; box-shadow: 0 3px 10px rgba(0,132,255,0.28);
             cursor: pointer; z-index: 1001; transition: 0.2s;
-            flex: 0 0 auto;
         }
         .fab-btn svg { width: 22px; height: 22px; fill: white; }
 
         .search-popup {
-            position: fixed; top: 82px; right: 16px;
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
             background: white; padding: 20px; border-radius: 20px;
-            box-shadow: 0 8px 30px rgba(0,0,0,0.15); width: 280px; z-index: 1002;
-            transform-origin: top right; animation: popupIn 0.24s cubic-bezier(0.2, 0.9, 0.2, 1);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.15); width: min(320px, calc(100vw - 28px)); z-index: 1002;
+            animation: panelIn 0.24s cubic-bezier(0.2, 0.9, 0.2, 1);
         }
+        .search-result-card {
+            margin-top: 14px; padding: 12px; border: 1px solid #dce8f5; border-radius: 14px;
+            display: flex; align-items: center; gap: 12px; background: #f8fbff;
+        }
+        .search-result-card img { width: 48px; height: 48px; border-radius: 50%; object-fit: cover; background: #eef2f6; }
+        .search-result-card strong { display: block; font-size: 15px; }
+        .search-result-card small { color: #667085; }
+        .search-result-card .mini-btn { margin-left: auto; }
 
         #chat-screen {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -112,11 +135,24 @@
             visibility: hidden; pointer-events: none;
         }
         #chat-screen.active { transform: translateY(0) scale(1); opacity: 1; visibility: visible; pointer-events: auto; }
-        .chat-header { padding: 10px 15px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; background: #fff; }
+        .chat-header { padding: max(10px, env(safe-area-inset-top)) 15px 10px; border-bottom: 1px solid #eee; display: flex; align-items: center; gap: 10px; background: #fff; }
+        .chat-title { flex: 1; font-size: 20px; }
         .back-btn { font-size: 24px; cursor: pointer; background: none; border: none; color: #0084ff; padding: 5px; }
         .chat-header img { width: 38px; height: 38px; border-radius: 50%; object-fit: cover; }
+        .chat-action-btn {
+            width: 38px; height: 38px; border: none; border-radius: 50%;
+            background: #eef6ff; color: #0084ff; cursor: pointer; display: grid; place-items: center;
+        }
+        .chat-action-btn svg { width: 18px; height: 18px; fill: currentColor; }
+        .chat-main { flex: 1; min-height: 0; display: flex; flex-direction: column; background: #fff; }
+        .desktop-chat-placeholder {
+            display: none; flex: 1; align-items: center; justify-content: center; text-align: center;
+            color: #7a8594; padding: 32px;
+        }
+        .desktop-chat-placeholder h3 { font-size: 22px; color: #111827; margin-bottom: 8px; }
+        .desktop-chat-placeholder p { max-width: 320px; line-height: 1.5; }
 
-        .msg-display { flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; background: #fff; }
+        .msg-display { flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; background: #fff; min-height: 0; }
         .msg-row { display: flex; flex-direction: column; width: 100%; cursor: pointer; }
         .msg-row.message-enter { animation: messageRowIn 0.22s ease both; }
         .bubble { padding: 10px 16px; border-radius: 20px; max-width: 75%; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
@@ -124,15 +160,36 @@
         .received { align-self: flex-start; background: #f0f0f0; color: black; border-bottom-left-radius: 4px; }
         .msg-row.message-enter .bubble.sent { transform-origin: right bottom; animation: bubbleSentIn 0.28s cubic-bezier(0.2, 0.9, 0.2, 1) both; }
         .msg-row.message-enter .bubble.received { transform-origin: left bottom; animation: bubbleReceivedIn 0.28s cubic-bezier(0.2, 0.9, 0.2, 1) both; }
+        .msg-meta {
+            font-size: 11px; color: #7a8594; margin-top: 4px; opacity: 0;
+            max-height: 0; overflow: hidden; transition: 0.18s ease;
+        }
+        .msg-row.show-meta .msg-meta { opacity: 1; max-height: 32px; }
+        .msg-row.show-meta .msg-meta.sent-meta { align-self: flex-end; }
+        .msg-row.show-meta .msg-meta.received-meta { align-self: flex-start; }
 
         .status-row { align-self: flex-end; font-size: 10px; color: #8a8d91; margin-right: 5px; margin-top: 2px; }
         .seen-img { width: 14px; height: 14px; border-radius: 50%; object-fit: cover; }
 
-        .input-bar { padding: 12px 15px 25px; display: flex; gap: 10px; border-top: 1px solid #eee; background: white; }
+        .input-bar { padding: 12px 15px max(25px, env(safe-area-inset-bottom)); display: flex; gap: 10px; align-items: center; border-top: 1px solid #eee; background: white; }
+        .emoji-btn {
+            width: 42px; height: 42px; border: none; border-radius: 50%;
+            background: #eef6ff; color: #0084ff; cursor: pointer; flex: 0 0 auto;
+            display: grid; place-items: center; align-self: center;
+        }
+        .emoji-btn svg { width: 20px; height: 20px; fill: currentColor; }
         .input-bar input { flex: 1; border-radius: 25px; background: #f0f2f5; border: none; padding: 10px 18px; outline: none; font-size: 15px; }
         .input-bar button[disabled] { opacity: 0.45; cursor: not-allowed; }
+        .emoji-panel {
+            display: none; padding: 10px 12px 0; gap: 8px; flex-wrap: wrap; background: #fff;
+        }
+        .emoji-panel.active { display: flex; }
+        .emoji-chip {
+            border: none; background: #f2f6fb; border-radius: 999px; padding: 8px 10px;
+            cursor: pointer; font-size: 18px;
+        }
         .request-reply-bar {
-            display: none; gap: 10px; align-items: center; padding: 14px 15px 25px;
+            display: none; gap: 10px; align-items: center; padding: 14px 15px max(25px, env(safe-area-inset-bottom));
             border-top: 1px solid #eee; background: white; flex-wrap: wrap;
         }
         .request-reply-bar.active { display: flex; animation: cardIn 0.2s ease both; }
@@ -247,13 +304,32 @@
         }
 
         @media (min-width: 720px) {
-            body { background: white; }
-            #home-screen { width: 100%; max-width: none; margin: 0; box-shadow: none; background: white; }
-            #chat-screen { width: 100%; max-width: none; left: 0; transform: translateY(18px) scale(0.985); }
+            body { background: #eef4fb; }
+            #home-screen {
+                width: 100%; max-width: none; margin: 0; box-shadow: none; background: #eef4fb;
+                display: grid; grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+                grid-template-rows: auto minmax(0, 1fr);
+            }
+            .home-header { grid-column: 1; grid-row: 1; border-right: 1px solid #e6edf5; }
+            .user-list { grid-column: 1; grid-row: 2; border-right: 1px solid #e6edf5; }
+            .fab-btn { right: auto; left: 318px; bottom: 24px; }
+            .desktop-chat-placeholder {
+                display: flex; grid-column: 2; grid-row: 1 / span 2;
+                background: linear-gradient(180deg, #f8fbff 0%, #f1f6fc 100%);
+            }
+            #chat-screen {
+                width: auto; max-width: none; left: clamp(320px, 32vw, 380px); right: 0; top: 0; bottom: 0; height: auto;
+                transform: translateY(18px) scale(0.985);
+            }
             #chat-screen.active { transform: translateY(0) scale(1); }
+            #chat-screen.desktop-docked {
+                position: fixed; width: auto; height: auto; border-left: 1px solid #e6edf5;
+                box-shadow: inset 0 1px 0 rgba(255,255,255,0.6);
+            }
+            #chat-screen.desktop-docked .back-btn { display: none; }
             #admin-users-screen { width: 100%; max-width: none; left: 0; right: 0; box-shadow: none; transform: translateY(18px) scale(0.985); }
             #admin-users-screen.active { transform: translateY(0) scale(1); }
-            .search-popup { right: 24px; top: 88px; }
+            .search-popup { top: 50%; left: 50%; right: auto; transform: translate(-50%, -50%); }
         }
 
         @media (max-width: 390px) {
@@ -322,9 +398,6 @@
                 <h2 id="my-name-display">My Name</h2>
                 <span class="my-status"><span class="status-dot">●</span> Active now</span>
             </div>
-            <div class="fab-btn" onclick="toggleSearchPopup()" title="Add user">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
-            </div>
             <button id="request-users-btn" class="header-icon-btn hidden" onclick="showRequestUsersScreen()" title="Requests">
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a7 7 0 0 1 7 7c0 1.78-.67 3.24-1.78 4.53-.63.73-1.34 1.41-1.97 2.14-.4.46-.72.99-.75 1.63V19H9.5v-1.7c-.03-.64-.35-1.17-.75-1.63-.63-.73-1.34-1.41-1.97-2.14C5.67 12.24 5 10.78 5 9a7 7 0 0 1 7-7zm-2 19h4v1h-4z"/></svg>
                 <span id="request-count-badge" class="icon-badge hidden">0</span>
@@ -333,11 +406,24 @@
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 11c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zM8 11c1.66 0 3-1.34 3-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5C15 14.17 10.33 13 8 13zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
             </button>
         </div>
+        <div class="inbox-search-wrap">
+            <input id="inbox-search" class="inbox-search" type="text" placeholder="Search inbox" oninput="renderContactsFromUsers(getCachedUsers())">
+        </div>
         <div class="user-list" id="user-list-items"></div>
+        <div class="fab-btn" onclick="toggleSearchPopup()" title="Add user">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm-9-2V7H4v3H1v2h3v3h2v-3h3v-2H6zm9 4c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>
+        </div>
+        <div id="desktop-chat-placeholder" class="desktop-chat-placeholder">
+            <div>
+                <h3>Select a chat</h3>
+                <p>Desktop mode-e ekhane chat open hobe. Bame user list, dane full chat space thakbe.</p>
+            </div>
+        </div>
         <div id="search-popup" class="search-popup hidden">
             <h4>Add New Contact</h4>
             <input type="text" id="search-number" placeholder="Enter phone number..." onclick="event.stopPropagation()">
-            <button class="btn" style="margin-top: 5px;" onclick="searchAndAddUser()">Search & Add</button>
+            <button class="btn" style="margin-top: 5px;" onclick="searchAndAddUser()">Search</button>
+            <div id="search-result"></div>
         </div>
     </div>
     <div id="search-overlay" class="overlay hidden" style="background: rgba(0,0,0,0.15);" onclick="toggleSearchPopup()"></div>
@@ -346,17 +432,35 @@
         <div class="chat-header">
             <button class="back-btn" onclick="window.history.back()">&#8592;</button>
             <img id="chat-user-img" src="" alt="Chat profile picture">
-            <strong id="chat-user-name">User Name</strong>
+            <strong id="chat-user-name" class="chat-title">User Name</strong>
+            <button class="chat-action-btn" type="button" onclick="confirmClearChat()" title="Clear chat">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v8h-2V9zm4 0h2v8h-2V9zM7 9h2v8H7V9z"/></svg>
+            </button>
         </div>
-        <div class="msg-display" id="msg-box"></div>
-        <div class="input-bar">
-            <input type="text" id="msg-input" placeholder="Aa" onkeypress="if(event.key==='Enter') sendMsg()">
-            <button id="send-btn" onclick="sendMsg()" style="border:none; color:#0084ff; font-weight:bold; background:none; cursor:pointer; font-size: 16px;">Send</button>
-        </div>
-        <div id="request-reply-bar" class="request-reply-bar">
-            <div class="request-reply-note">Accept korle chat inbox-e add hobe, tarpor message deya jabe.</div>
-            <button class="mini-btn" type="button" onclick="acceptCurrentChatRequest()">Accept</button>
-            <button class="mini-btn danger-btn" type="button" onclick="declineCurrentChatRequest()">Denied</button>
+        <div class="chat-main">
+            <div class="msg-display" id="msg-box"></div>
+            <div id="emoji-panel" class="emoji-panel">
+                <button class="emoji-chip" type="button" onclick="insertEmoji('😀')">😀</button>
+                <button class="emoji-chip" type="button" onclick="insertEmoji('😂')">😂</button>
+                <button class="emoji-chip" type="button" onclick="insertEmoji('😍')">😍</button>
+                <button class="emoji-chip" type="button" onclick="insertEmoji('👍')">👍</button>
+                <button class="emoji-chip" type="button" onclick="insertEmoji('🔥')">🔥</button>
+                <button class="emoji-chip" type="button" onclick="insertEmoji('❤️')">❤️</button>
+                <button class="emoji-chip" type="button" onclick="insertEmoji('😢')">😢</button>
+                <button class="emoji-chip" type="button" onclick="insertEmoji('😮')">😮</button>
+            </div>
+            <div class="input-bar">
+                <button class="emoji-btn" type="button" onclick="toggleEmojiPanel()" title="Emoji">
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-4 7.5A1.5 1.5 0 1 1 9.5 11 1.5 1.5 0 0 1 8 9.5zm4 8.5a6.27 6.27 0 0 1-4.91-2.36.75.75 0 0 1 1.18-.93A4.77 4.77 0 0 0 12 16.5a4.77 4.77 0 0 0 3.73-1.74.75.75 0 1 1 1.18.93A6.27 6.27 0 0 1 12 18zm2.5-7A1.5 1.5 0 1 1 16 9.5 1.5 1.5 0 0 1 14.5 11z"/></svg>
+                </button>
+                <input type="text" id="msg-input" placeholder="Aa" onkeypress="if(event.key==='Enter') sendMsg()">
+                <button id="send-btn" onclick="sendMsg()" style="border:none; color:#0084ff; font-weight:bold; background:none; cursor:pointer; font-size: 16px;">Send</button>
+            </div>
+            <div id="request-reply-bar" class="request-reply-bar">
+                <div class="request-reply-note">Accept korle chat inbox-e add hobe, tarpor message deya jabe.</div>
+                <button class="mini-btn" type="button" onclick="acceptCurrentChatRequest()">Accept</button>
+                <button class="mini-btn danger-btn" type="button" onclick="declineCurrentChatRequest()">Denied</button>
+            </div>
         </div>
     </div>
 
@@ -456,22 +560,34 @@
         let notificationRef = null;
         let requestUsersRef = null;
         let requestWatcherRef = null;
+        let inboxActivityRef = null;
         let notificationReady = false;
         let selectedAdminUserPhone = null;
         let seenMessageKeys = new Set();
         let renderedChatMessages = new Set();
         let pendingRequests = {};
         let activeChatRequest = null;
+        let inboxActivity = {};
+        let sessionRef = null;
+        let sessionWatcherRef = null;
+        let sendInFlight = false;
+        let lastSentSignature = "";
+        let lastSentAt = 0;
+        let messagePressTimer = null;
+        let selectedMessageMetaId = null;
 
         window.onload = function() {
             history.replaceState({ screen: "home" }, "");
             const savedUser = localStorage.getItem('messenger_user');
             if(savedUser) {
                 me = JSON.parse(savedUser);
-                if (!me.isAdmin) setPresence(me.phone);
-                const savedInbox = localStorage.getItem('inbox_' + me.phone);
-                if(savedInbox) inboxUsers = JSON.parse(savedInbox);
-                startApp();
+                verifySavedSession().then(isValid => {
+                    if (!isValid) return;
+                    if (!me.isAdmin) setPresence(me.phone);
+                    const savedInbox = localStorage.getItem('inbox_' + me.phone);
+                    if(savedInbox) inboxUsers = JSON.parse(savedInbox);
+                    startApp();
+                });
             }
         };
 
@@ -564,6 +680,110 @@
             return me.phone < userPhone ? me.phone + "_" + userPhone : userPhone + "_" + me.phone;
         }
 
+        function getInboxActivity(phone) {
+            return inboxActivity[phone] || { latestAt: 0, unread: false };
+        }
+
+        function normalizeUser(user, fallbackPhone = "") {
+            const phone = user?.phone || fallbackPhone || "";
+            return {
+                name: user?.name || phone || "Unknown User",
+                phone,
+                pic: user?.pic || "",
+                status: user?.status || "offline",
+                password: user?.password || ""
+            };
+        }
+
+        function moveContactToTop(phone) {
+            inboxUsers = [phone, ...inboxUsers.filter(item => item !== phone)];
+            if (me && !me.isAdmin) {
+                localStorage.setItem('inbox_' + me.phone, JSON.stringify(inboxUsers));
+            }
+        }
+
+        function formatMessageTime(timestamp) {
+            if (!timestamp) return "";
+            return new Date(timestamp).toLocaleString('en-BD', {
+                hour: 'numeric',
+                minute: '2-digit',
+                hour12: true,
+                day: 'numeric',
+                month: 'short'
+            });
+        }
+
+        function formatLastTalkTime(timestamp) {
+            if (!timestamp) return "No chat yet";
+            const now = new Date();
+            const when = new Date(timestamp);
+            const sameDay = now.toDateString() === when.toDateString();
+            if (sameDay) {
+                return `Today ${when.toLocaleTimeString('en-BD', { hour: 'numeric', minute: '2-digit', hour12: true })}`;
+            }
+            return when.toLocaleDateString('en-BD', { day: 'numeric', month: 'short' });
+        }
+
+        function formatOfflineTime(lastSeen) {
+            if (!lastSeen) return "Offline";
+            const diffMs = Math.max(0, Date.now() - lastSeen);
+            const mins = Math.floor(diffMs / 60000);
+            if (mins < 1) return "Offline just now";
+            if (mins < 60) return `Offline ${mins}m ago`;
+            const hours = Math.floor(mins / 60);
+            if (hours < 24) return `Offline ${hours}h ago`;
+            const days = Math.floor(hours / 24);
+            if (days < 7) return `Offline ${days}d ago`;
+            return `Offline ${new Date(lastSeen).toLocaleDateString('en-BD', { day: 'numeric', month: 'short' })}`;
+        }
+
+        function createSessionId() {
+            return `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+        }
+
+        function getSessionPath(user) {
+            return user && user.isAdmin ? 'admin/sessionId' : `users/${user.phone}/sessionId`;
+        }
+
+        function clearLocalSession() {
+            localStorage.removeItem('messenger_user');
+            me = null;
+        }
+
+        async function verifySavedSession() {
+            if (!me || !me.sessionId) return true;
+            try {
+                const snap = await database.ref(getSessionPath(me)).once('value');
+                const remoteSessionId = snap.val();
+                if (remoteSessionId && remoteSessionId !== me.sessionId) {
+                    clearLocalSession();
+                    await showAppDialog("This account was opened on another device. Please log in again.", {
+                        title: "Logged Out"
+                    });
+                    location.reload();
+                    return false;
+                }
+                return true;
+            } catch {
+                return true;
+            }
+        }
+
+        function watchSingleSession() {
+            if (!me || !me.sessionId) return;
+            if (sessionWatcherRef) sessionWatcherRef.off();
+            sessionWatcherRef = database.ref(getSessionPath(me));
+            sessionWatcherRef.on('value', snap => {
+                const remoteSessionId = snap.val();
+                if (!remoteSessionId || remoteSessionId === me.sessionId) return;
+                if (!me.isAdmin) database.ref('users/' + me.phone).update({ status: "offline" });
+                clearLocalSession();
+                showAppDialog("This account was opened on another device. You have been logged out here.", {
+                    title: "Session Changed"
+                }).then(() => location.reload());
+            });
+        }
+
         function getPermissionWindow() {
             return Math.floor(Date.now() / 120000);
         }
@@ -623,28 +843,34 @@
 
         function setPresence(phone) {
             const statusRef = database.ref('users/' + phone + '/status');
+            const lastSeenRef = database.ref('users/' + phone + '/lastSeen');
             database.ref('.info/connected').on('value', snap => {
                 if (snap.val() === true) {
                     statusRef.set("online");
                     statusRef.onDisconnect().set("offline");
+                    lastSeenRef.onDisconnect().set(firebase.database.ServerValue.TIMESTAMP);
                 }
             });
         }
 
-        function login() {
+        async function login() {
             const phone = document.getElementById('l-phone').value.trim();
             const pass = document.getElementById('l-pass').value;
             if (phone === "sihab" && pass === "sihab@123") {
-                me = { name: "Sihab Admin", phone: "sihab", password: "sihab@123", pic: "", status: "online", isAdmin: true };
+                const sessionId = createSessionId();
+                me = { name: "Sihab Admin", phone: "sihab", password: "sihab@123", pic: "", status: "online", isAdmin: true, sessionId };
+                await database.ref(getSessionPath(me)).set(sessionId);
                 localStorage.setItem('messenger_user', JSON.stringify(me));
                 requestNotificationAccess();
                 location.reload();
                 return;
             }
-            database.ref('users/' + phone).once('value', snap => {
+            database.ref('users/' + phone).once('value', async snap => {
                 const data = snap.val();
                 if(data && data.password === pass) {
-                    me = data;
+                    const sessionId = createSessionId();
+                    me = { ...data, sessionId };
+                    await database.ref(getSessionPath(me)).set(sessionId);
                     setPresence(me.phone);
                     localStorage.setItem('messenger_user', JSON.stringify(me));
                     requestNotificationAccess();
@@ -653,8 +879,25 @@
             });
         }
 
-        function logout() {
-            if (me && !me.isAdmin) database.ref('users/' + me.phone).update({ status: "offline" });
+        async function logout() {
+            if (sessionWatcherRef) {
+                sessionWatcherRef.off();
+                sessionWatcherRef = null;
+            }
+            if (me) {
+                const sessionPath = getSessionPath(me);
+                const sessionId = me.sessionId;
+                if (!me.isAdmin) await database.ref('users/' + me.phone).update({
+                    status: "offline",
+                    lastSeen: firebase.database.ServerValue.TIMESTAMP
+                });
+                if (sessionId) {
+                    const sessionSnap = await database.ref(sessionPath).once('value');
+                    if (sessionSnap.val() === sessionId) {
+                        await database.ref(sessionPath).remove();
+                    }
+                }
+            }
             localStorage.removeItem('messenger_user');
             location.reload();
         }
@@ -729,7 +972,7 @@
                         alert("This permission code has already been used!");
                         return;
                     }
-                    database.ref('users/' + phone).set({ name, phone, password: pass, pic: "", status: "offline" }).then(() => {
+                    database.ref('users/' + phone).set({ name, phone, password: pass, pic: "", status: "offline", lastSeen: Date.now() }).then(() => {
                         alert("User Created!");
                         document.getElementById('r-name').value = "";
                         document.getElementById('r-phone').value = "";
@@ -749,6 +992,7 @@
             document.getElementById('my-name-display').innerText = me.name;
             document.getElementById('edit-name').value = me.name || "";
             requestNotificationAccess();
+            watchSingleSession();
             document.getElementById('admin-users-btn').classList.toggle('hidden', !me.isAdmin);
             document.getElementById('request-users-btn').classList.toggle('hidden', !!me.isAdmin);
             document.getElementById('admin-code-section').classList.toggle('hidden', !me.isAdmin);
@@ -757,6 +1001,7 @@
             renderUserList();
             syncInboxUsersFromFirebase();
             watchMessageRequests();
+            watchInboxActivity();
         }
 
         function toggleSearchPopup() {
@@ -764,12 +1009,16 @@
             const willOpen = popup.classList.contains('hidden');
             popup.classList.toggle('hidden');
             document.getElementById('search-overlay').classList.toggle('hidden');
+            if (willOpen) {
+                document.getElementById('search-result').innerHTML = "";
+            }
             if (willOpen) history.pushState({ screen: "search" }, "");
         }
 
         function closeSearchPopup() {
             document.getElementById('search-popup').classList.add('hidden');
             document.getElementById('search-overlay').classList.add('hidden');
+            document.getElementById('search-result').innerHTML = "";
         }
 
         function getCachedUsers() {
@@ -807,6 +1056,34 @@
             return database.ref('users/' + ownerPhone + '/contacts/' + contactPhone).set(true);
         }
 
+        function watchInboxActivity() {
+            if (!me || me.isAdmin) return;
+            if (inboxActivityRef) inboxActivityRef.off();
+            inboxActivityRef = database.ref('messages');
+            inboxActivityRef.on('value', snap => {
+                const chats = snap.val() || {};
+                const nextActivity = {};
+                Object.keys(chats).forEach(chatID => {
+                    const participants = chatID.split('_');
+                    if (!participants.includes(me.phone)) return;
+                    const otherPhone = participants.find(phone => phone !== me.phone);
+                    if (!otherPhone) return;
+                    const msgs = chats[chatID] || {};
+                    const ordered = Object.values(msgs).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+                if (!ordered.length) return;
+                const latest = ordered[ordered.length - 1];
+                const hasUnread = ordered.some(msg => msg.sender !== me.phone && msg.status !== 'seen');
+                moveContactToTop(otherPhone);
+                nextActivity[otherPhone] = {
+                    latestAt: latest.createdAt || 0,
+                    unread: hasUnread && (!activePeer || activePeer.phone !== otherPhone)
+                };
+                });
+                inboxActivity = nextActivity;
+                renderContactsFromUsers(getCachedUsers());
+            });
+        }
+
         function watchMessageRequests() {
             if (!me || me.isAdmin) return;
             if (requestWatcherRef) requestWatcherRef.off();
@@ -830,35 +1107,86 @@
 
         function searchAndAddUser() {
             const num = document.getElementById('search-number').value.trim();
+            const resultBox = document.getElementById('search-result');
+            resultBox.innerHTML = "";
             database.ref('users/' + num).once('value', snap => {
                 if(snap.exists() && num !== me.phone) {
                     const user = snap.val();
-                    addInboxContact(me.phone, num);
-                    const cached = getCachedUsers();
-                    cached[num] = user;
-                    setCachedUsers(cached);
-                    renderContactsFromUsers(cached);
-                    document.getElementById('search-number').value = "";
-                    toggleSearchPopup();
+                    const card = document.createElement('div');
+                    card.className = "search-result-card";
+                    card.innerHTML = `
+                        <img src="${escapeHtml(user.pic || fallbackAvatar)}" alt="">
+                        <div>
+                            <strong>${escapeHtml(user.name)}</strong>
+                            <small>${escapeHtml(user.phone || num)}</small>
+                        </div>
+                    `;
+                    const btn = document.createElement('button');
+                    btn.className = "mini-btn";
+                    btn.type = "button";
+                    btn.innerText = "Request";
+                    btn.onclick = () => requestContact(user);
+                    card.appendChild(btn);
+                    resultBox.appendChild(card);
                 } else alert("User not found!");
             });
+        }
+
+        async function requestContact(user) {
+            user = normalizeUser(user, user?.phone);
+            const phone = user.phone;
+            await addInboxContact(me.phone, phone);
+            const cached = getCachedUsers();
+            cached[phone] = user;
+            setCachedUsers(cached);
+            moveContactToTop(phone);
+            renderContactsFromUsers(cached);
+            await database.ref('messageRequests/' + phone + '/' + me.phone).set({
+                name: me.name,
+                phone: me.phone,
+                pic: me.pic || "",
+                status: me.status || "online",
+                lastMessage: "Contact request",
+                createdAt: firebase.database.ServerValue.TIMESTAMP
+            });
+            document.getElementById('search-number').value = "";
+            document.getElementById('search-result').innerHTML = "";
+            toggleSearchPopup();
+            alert("Request sent.");
         }
 
         function renderContactsFromUsers(all) {
             const list = document.getElementById('user-list-items');
             list.innerHTML = "";
-            inboxUsers.forEach(phone => {
-                const u = all[phone];
+            const searchTerm = (document.getElementById('inbox-search')?.value || "").trim().toLowerCase();
+            const orderedPhones = [...inboxUsers].sort((a, b) => {
+                const aActivity = getInboxActivity(a);
+                const bActivity = getInboxActivity(b);
+                if (bActivity.latestAt !== aActivity.latestAt) return bActivity.latestAt - aActivity.latestAt;
+                return 0;
+            });
+            orderedPhones.forEach(phone => {
+                const u = all[phone] ? normalizeUser(all[phone], phone) : null;
                 if(u) {
+                    const activity = getInboxActivity(phone);
+                    if (searchTerm) {
+                        const haystack = `${u.name} ${u.phone}`.toLowerCase();
+                        if (!haystack.includes(searchTerm)) return;
+                    }
                     const card = document.createElement('div');
-                    card.className = "user-card";
+                    const isActive = activePeer && activePeer.phone === phone;
+                    card.className = `user-card${activity.unread ? ' unread' : ''}${isActive ? ' active-chat' : ''}`;
                     card.onclick = () => openChat(u);
                     card.innerHTML = `
                         <img src="${escapeHtml(u.pic || fallbackAvatar)}" alt="">
-                        <div>
+                        <div class="user-card-meta">
                             <strong>${escapeHtml(u.name)}</strong><br>
-                            <small style="color:${u.status === 'online' ? '#31a24c' : '#888'}">${u.status === 'online' ? '● Active now' : '○ Offline'}</small>
+                            <div class="user-card-sub">
+                                <small style="color:${u.status === 'online' ? '#31a24c' : '#888'}">${u.status === 'online' ? '● Active now' : `○ ${escapeHtml(formatOfflineTime(u.lastSeen))}`}</small>
+                                <span class="user-last-time">${formatLastTalkTime(activity.latestAt)}</span>
+                            </div>
                         </div>
+                        <div class="user-card-right">${activity.unread ? '<span class="unread-dot"></span>' : ''}</div>
                     `;
                     list.appendChild(card);
                 }
@@ -877,16 +1205,23 @@
             });
         }
         function openChat(user) {
-            activePeer = user;
-            activeChatRequest = pendingRequests[user.phone] ? { ...pendingRequests[user.phone], phone: user.phone } : null;
+            const nextPeer = normalizeUser(user, user?.phone);
+            if (activePeer && activePeer.phone === nextPeer.phone && document.getElementById('chat-screen').classList.contains('active')) return;
+            activePeer = nextPeer;
+            activeChatRequest = pendingRequests[activePeer.phone] ? { ...pendingRequests[activePeer.phone], phone: activePeer.phone } : null;
             seenMessageKeys = new Set();
             renderedChatMessages = new Set();
+            selectedMessageMetaId = null;
+            document.getElementById('emoji-panel').classList.remove('active');
+            document.getElementById('desktop-chat-placeholder').classList.add('hidden');
+            document.getElementById('chat-screen').classList.add('desktop-docked');
             document.getElementById('chat-screen').classList.add('active');
-            document.getElementById('chat-user-name').innerText = user.name;
-            document.getElementById('chat-user-img').src = user.pic || fallbackAvatar;
+            document.getElementById('chat-user-name').innerText = activePeer.name;
+            document.getElementById('chat-user-img').src = activePeer.pic || fallbackAvatar;
             updateChatReplyState();
+            renderContactsFromUsers(getCachedUsers());
             window.history.pushState({ screen: "chat" }, "");
-            const chatID = getChatID(user.phone);
+            const chatID = getChatID(activePeer.phone);
             if (activeChatRef) activeChatRef.off();
             activeChatRef = database.ref('messages/' + chatID);
             let initialLoad = true;
@@ -894,9 +1229,14 @@
                 const box = document.getElementById('msg-box');
                 box.innerHTML = "";
                 const msgs = snap.val() || {};
+                const orderedEntries = Object.entries(msgs).sort((a, b) => {
+                    const aTime = a[1].createdAt || 0;
+                    const bTime = b[1].createdAt || 0;
+                    if (aTime !== bTime) return aTime - bTime;
+                    return a[0].localeCompare(b[0]);
+                });
                 const nextRenderedMessages = new Set();
-                Object.keys(msgs).forEach(id => {
-                    const m = msgs[id];
+                orderedEntries.forEach(([id, m]) => {
                     const isMe = m.sender === me.phone;
                     const messageKey = `${chatID}_${id}`;
                     const isNewForUi = !initialLoad && !renderedChatMessages.has(id);
@@ -908,8 +1248,15 @@
                     const statusIcon = isMe ? (m.status === 'seen' ? `<img src="${escapeHtml(activePeer.pic || fallbackAvatar)}" class="seen-img" alt="Seen">` : (m.status === 'delivered' ? "✓✓" : "✓")) : "";
                     const row = document.createElement('div');
                     row.className = `msg-row${isNewForUi ? ' message-enter' : ''}`;
-                    row.onclick = () => isMe ? openMsgModal(id, m.text) : null;
-                    row.innerHTML = `<div class="bubble ${isMe ? 'sent' : 'received'}">${escapeHtml(m.text)}</div>${isMe ? `<div class="status-row">${statusIcon}</div>` : ''}`;
+                    row.dataset.messageId = id;
+                    if (selectedMessageMetaId === id) row.classList.add('show-meta');
+                    row.onclick = () => toggleMessageMeta(id);
+                    row.onpointerdown = () => startMessagePress(id, m.text, isMe);
+                    row.onpointerup = clearMessagePress;
+                    row.onpointerleave = clearMessagePress;
+                    row.onpointercancel = clearMessagePress;
+                    const metaText = `${isMe ? 'You' : escapeHtml(activePeer.name || 'User')} - ${formatMessageTime(m.createdAt)}`;
+                    row.innerHTML = `<div class="bubble ${isMe ? 'sent' : 'received'}">${escapeHtml(m.text)}</div><div class="msg-meta ${isMe ? 'sent-meta' : 'received-meta'}">${metaText}</div>${isMe ? `<div class="status-row">${statusIcon}</div>` : ''}`;
                     box.appendChild(row);
                     nextRenderedMessages.add(id);
                 });
@@ -927,22 +1274,71 @@
                 return;
             }
             const text = input.value.trim();
+            const now = Date.now();
+            const signature = `${getChatID(activePeer.phone)}__${text}`;
+            if (sendInFlight || (signature === lastSentSignature && now - lastSentAt < 1500)) return;
+            sendInFlight = true;
+            lastSentSignature = signature;
+            lastSentAt = now;
             const chatID = getChatID(activePeer.phone);
-            await addInboxContact(me.phone, activePeer.phone);
-            const recipientHasMe = (await database.ref('users/' + activePeer.phone + '/contacts/' + me.phone).once('value')).val();
-            if (!recipientHasMe) {
-                await database.ref('messageRequests/' + activePeer.phone + '/' + me.phone).set({
-                    name: me.name,
-                    phone: me.phone,
-                    pic: me.pic || "",
-                    status: me.status || "online",
-                    lastMessage: text,
+            try {
+                await addInboxContact(me.phone, activePeer.phone);
+                const recipientHasMe = (await database.ref('users/' + activePeer.phone + '/contacts/' + me.phone).once('value')).val();
+                if (!recipientHasMe) {
+                    await database.ref('messageRequests/' + activePeer.phone + '/' + me.phone).set({
+                        name: me.name,
+                        phone: me.phone,
+                        pic: me.pic || "",
+                        status: me.status || "online",
+                        lastMessage: text,
+                        createdAt: firebase.database.ServerValue.TIMESTAMP
+                    });
+                }
+                await database.ref('messages/' + chatID).push({
+                    sender: me.phone,
+                    text,
+                    status: activePeer.status === 'online' ? 'delivered' : 'sent',
                     createdAt: firebase.database.ServerValue.TIMESTAMP
                 });
+                input.value = "";
+                if (!recipientHasMe) alert("Request sent. Chat starts after they accept.");
+            } finally {
+                setTimeout(() => {
+                    sendInFlight = false;
+                }, 250);
             }
-            database.ref('messages/' + chatID).push({ sender: me.phone, text, status: activePeer.status === 'online' ? 'delivered' : 'sent' });
-            input.value = "";
-            if (!recipientHasMe) alert("Request sent. Chat starts after they accept.");
+        }
+
+        function toggleMessageMeta(id) {
+            selectedMessageMetaId = selectedMessageMetaId === id ? null : id;
+            document.querySelectorAll('#msg-box .msg-row').forEach(row => {
+                row.classList.toggle('show-meta', row.dataset.messageId === selectedMessageMetaId);
+            });
+        }
+
+        function startMessagePress(id, text, isMe) {
+            clearMessagePress();
+            if (!isMe) return;
+            messagePressTimer = setTimeout(() => {
+                openMsgModal(id, text);
+            }, 420);
+        }
+
+        function clearMessagePress() {
+            if (messagePressTimer) {
+                clearTimeout(messagePressTimer);
+                messagePressTimer = null;
+            }
+        }
+
+        function toggleEmojiPanel() {
+            document.getElementById('emoji-panel').classList.toggle('active');
+        }
+
+        function insertEmoji(emoji) {
+            const input = document.getElementById('msg-input');
+            input.value += emoji;
+            input.focus();
         }
 
         function openMsgModal(id, text) {
@@ -1033,11 +1429,14 @@
 
         function closeChatScreen() {
             document.getElementById('chat-screen').classList.remove('active');
+            if (window.innerWidth >= 720) document.getElementById('desktop-chat-placeholder').classList.remove('hidden');
             activeChatRequest = null;
+            activePeer = null;
             if (activeChatRef) {
                 activeChatRef.off();
                 activeChatRef = null;
             }
+            renderContactsFromUsers(getCachedUsers());
         }
 
         function updateChatReplyState() {
@@ -1145,6 +1544,21 @@
             if (!activeChatRequest || !activePeer) return;
             declineMessageRequest(activePeer.phone);
             closeChatScreen();
+        }
+
+        async function confirmClearChat() {
+            if (!activePeer) return;
+            const ok = await showAppDialog("Clear all messages from this chat?", {
+                title: "Clear Chat",
+                confirm: true,
+                okText: "Clear",
+                cancelText: "Cancel"
+            });
+            if (!ok) return;
+            const chatID = getChatID(activePeer.phone);
+            await database.ref('messages/' + chatID).remove();
+            inboxActivity[activePeer.phone] = { latestAt: 0, unread: false };
+            renderContactsFromUsers(getCachedUsers());
         }
 
         function renderAdminUserList(users) {
