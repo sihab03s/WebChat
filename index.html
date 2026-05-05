@@ -28,7 +28,10 @@
           </label>
           <label>
             <span>Password</span>
-            <input id="loginPassword" type="password" autocomplete="current-password" placeholder="0">
+            <span class="password-wrap">
+              <input id="loginPassword" type="password" autocomplete="current-password" placeholder="0">
+              <button class="password-toggle" type="button" aria-label="Show password"></button>
+            </span>
           </label>
           <button class="auth-submit" type="submit">Login</button>
         </form>
@@ -44,14 +47,39 @@
           </label>
           <label>
             <span>Password</span>
-            <input id="signupPassword" type="password" autocomplete="new-password" placeholder="Password">
+            <span class="password-wrap">
+              <input id="signupPassword" type="password" autocomplete="new-password" placeholder="Password">
+              <button class="password-toggle" type="button" aria-label="Show password"></button>
+            </span>
+          </label>
+          <label>
+            <span>Confirm password</span>
+            <span class="password-wrap">
+              <input id="signupConfirmPassword" type="password" autocomplete="new-password" placeholder="Confirm password">
+              <button class="password-toggle" type="button" aria-label="Show password"></button>
+            </span>
+          </label>
+          <label>
+            <span class="label-with-note">Admin verification code <button class="code-note-button" id="codeNoteButton" type="button" aria-label="Verification code note">!</button></span>
+            <span class="paste-wrap">
+              <input id="signupAdminCode" type="text" autocomplete="one-time-code" placeholder="Verification code">
+              <button class="paste-button" id="signupCodePasteButton" type="button">Paste</button>
+            </span>
           </label>
           <button class="auth-submit" type="submit">Create account</button>
         </form>
 
+        <section class="signup-complete" id="signupComplete" aria-hidden="true">
+          <button class="signup-photo-button" id="signupPhotoButton" type="button" aria-label="Add profile photo">
+            <img id="signupCompletePhoto" src="" alt="">
+            <span>Photo</span>
+          </button>
+          <strong id="signupCompleteName"></strong>
+          <input class="hidden-input" id="signupPhotoInput" type="file" accept="image/*">
+        </section>
+
         <p class="auth-message" id="authMessage"></p>
         <button class="auth-switch" id="authSwitchButton" type="button">Create new account</button>
-        <p class="auth-demo">Testing: 0 / 0 and 1 / 1</p>
       </div>
     </section>
 
@@ -91,25 +119,6 @@
         </div>
       </section>
 
-      <nav class="story-row" aria-label="Active friends">
-        <button class="story active" type="button">
-          <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&w=120&q=80" alt="">
-          <span>Nadia</span>
-        </button>
-        <button class="story" type="button">
-          <img src="https://images.unsplash.com/photo-1506794778202-cad84cf45f1d?auto=format&fit=crop&w=120&q=80" alt="">
-          <span>Rafi</span>
-        </button>
-        <button class="story active" type="button">
-          <img src="https://images.unsplash.com/photo-1524504388940-b1c1722653e1?auto=format&fit=crop&w=120&q=80" alt="">
-          <span>Mitu</span>
-        </button>
-        <button class="story" type="button">
-          <img src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=120&q=80" alt="">
-          <span>Imran</span>
-        </button>
-      </nav>
-
       <section class="chat-list" id="chatList" aria-label="Conversations"></section>
       <button class="add-user-button" id="addUserButton" type="button" aria-label="Add user">+</button>
     </section>
@@ -123,7 +132,9 @@
           <p id="chatStatus"></p>
         </div>
         <button class="icon-button call-button" type="button" aria-label="Voice call">
-          <span aria-hidden="true"></span>
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M18.227 22.912c-4.913 0-9.286-3.627-11.486-5.828C4.486 14.83.731 10.291.921 5.231a3.289 3.289 0 0 1 .908-2.138 17.116 17.116 0 0 1 1.865-1.71 2.307 2.307 0 0 1 3.004.174 13.283 13.283 0 0 1 3.658 5.325 2.551 2.551 0 0 1-.19 1.941l-.455.853a.463.463 0 0 0-.024.387 7.57 7.57 0 0 0 4.077 4.075.455.455 0 0 0 .386-.024l.853-.455a2.548 2.548 0 0 1 1.94-.19 13.278 13.278 0 0 1 5.326 3.658 2.309 2.309 0 0 1 .174 3.003 17.319 17.319 0 0 1-1.71 1.866 3.29 3.29 0 0 1-2.138.91 10.27 10.27 0 0 1-.368.006Zm-13.144-20a.27.27 0 0 0-.167.054A15.121 15.121 0 0 0 3.28 4.47a1.289 1.289 0 0 0-.36.836c-.161 4.301 3.21 8.34 5.235 10.364s6.06 5.403 10.366 5.236a1.284 1.284 0 0 0 .835-.36 15.217 15.217 0 0 0 1.504-1.637.324.324 0 0 0-.047-.41 11.62 11.62 0 0 0-4.457-3.119.545.545 0 0 0-.411.044l-.854.455a2.452 2.452 0 0 1-2.071.116 9.571 9.571 0 0 1-5.189-5.188 2.457 2.457 0 0 1 .115-2.071l.456-.855a.544.544 0 0 0 .043-.41 11.629 11.629 0 0 0-3.118-4.458.36.36 0 0 0-.244-.1Z"></path>
+          </svg>
         </button>
         <div class="chat-options-wrap">
           <button class="icon-button more-button" id="chatOptionsButton" type="button" aria-label="More chat options">
@@ -139,27 +150,42 @@
       <section class="messages" id="messages" aria-live="polite"></section>
 
       <form class="composer" id="messageForm">
-        <div class="attachment-wrap">
-          <button class="plus-button" id="attachmentButton" type="button" aria-label="Add attachment">+</button>
-          <div class="attachment-menu" id="attachmentMenu" aria-hidden="true">
-            <button type="button" id="photoButton">Photo</button>
-            <button type="button" id="fileButton">File</button>
+        <input class="hidden-input" id="photoInput" type="file" accept="image/*">
+        <input class="hidden-input" id="fileInput" type="file">
+        <div class="message-input-wrap">
+          <input id="messageInput" type="text" autocomplete="off" placeholder="Message">
+          <div class="inline-compose-actions">
+            <button class="inline-photo-button" id="inlinePhotoButton" type="button" aria-label="Photo">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M18.44 2.004A3.56 3.56 0 0 1 22 5.564v12.873a3.56 3.56 0 0 1-3.56 3.56H5.568a3.56 3.56 0 0 1-3.56-3.56V5.563a3.56 3.56 0 0 1 3.56-3.56h12.872Zm0 2H5.568a1.56 1.56 0 0 0-1.56 1.56v9.24l3.22-3.22a2 2 0 0 1 2.828 0l1.265 1.265 3.112-3.112a2 2 0 0 1 2.828 0L20 12.476V5.564a1.56 1.56 0 0 0-1.56-1.56ZM7.5 8.75a1.75 1.75 0 1 1 0-3.5 1.75 1.75 0 0 1 0 3.5Z"></path>
+              </svg>
+            </button>
+            <button class="inline-voice-button" id="voiceButton" type="button" aria-label="Voice message">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 14.75a3.5 3.5 0 0 0 3.5-3.5v-5a3.5 3.5 0 0 0-7 0v5a3.5 3.5 0 0 0 3.5 3.5Zm6.25-3.5a1 1 0 1 0-2 0 4.25 4.25 0 0 1-8.5 0 1 1 0 1 0-2 0 6.26 6.26 0 0 0 5.25 6.17V20H8.75a1 1 0 1 0 0 2h6.5a1 1 0 1 0 0-2H13v-2.58a6.26 6.26 0 0 0 5.25-6.17Z"></path>
+              </svg>
+            </button>
+            <button class="inline-emoji-button" id="emojiButton" type="button" aria-label="Emoji">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M15.83 10.997a1.167 1.167 0 1 0 1.167 1.167 1.167 1.167 0 0 0-1.167-1.167Zm-6.5 1.167a1.167 1.167 0 1 0-1.166 1.167 1.167 1.167 0 0 0 1.166-1.167Zm5.163 3.24a3.406 3.406 0 0 1-4.982.007 1 1 0 1 0-1.557 1.256 5.397 5.397 0 0 0 8.09 0 1 1 0 0 0-1.55-1.263ZM12 .503a11.5 11.5 0 1 0 11.5 11.5A11.513 11.513 0 0 0 12 .503Zm0 21a9.5 9.5 0 1 1 9.5-9.5 9.51 9.51 0 0 1-9.5 9.5Z"></path>
+              </svg>
+            </button>
           </div>
-          <input class="hidden-input" id="photoInput" type="file" accept="image/*">
-          <input class="hidden-input" id="fileInput" type="file">
         </div>
-        <input id="messageInput" type="text" autocomplete="off" placeholder="Message">
         <div class="send-wrap">
-          <button class="emoji-button" id="emojiButton" type="button" aria-label="Emoji">☺</button>
-          <button class="send-button" type="submit" aria-label="Send message">&gt;</button>
-          <div class="emoji-menu" id="emojiMenu" aria-hidden="true">
-            <button type="button">😀</button>
-            <button type="button">😂</button>
-            <button type="button">😍</button>
-            <button type="button">👍</button>
-            <button type="button">❤️</button>
-            <button type="button">🔥</button>
-          </div>
+          <button class="send-button" type="submit" aria-label="Send message">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M16.6915026,12.4744748 L3.50612381,13.2599618 C3.19218622,13.2599618 3.03521743,13.4170592 3.03521743,13.5741566 L1.15159189,20.0151496 C0.8376543,20.8006365 0.99,21.89 1.77946707,22.52 C2.41,22.99 3.50612381,23.1 4.13399899,22.8429026 L21.714504,14.0454487 C22.6563168,13.5741566 23.1272231,12.6315722 22.9702544,11.6889879 C22.8132856,11.0605983 22.3423792,10.4322088 21.714504,10.118014 L4.13399899,1.16346272 C3.34915502,0.9 2.40734225,1.00636533 1.77946707,1.4776575 C0.994623095,2.10604706 0.8376543,3.0486314 1.15159189,3.99121575 L3.03521743,10.4322088 C3.03521743,10.5893061 3.34915502,10.7464035 3.50612381,10.7464035 L16.6915026,11.5318905 C16.6915026,11.5318905 17.1624089,11.5318905 17.1624089,12.0031827 C17.1624089,12.4744748 16.6915026,12.4744748 16.6915026,12.4744748 Z"></path>
+            </svg>
+          </button>
+        </div>
+        <div class="emoji-menu" id="emojiMenu" aria-hidden="true">
+          <button type="button">😀</button>
+          <button type="button">😂</button>
+          <button type="button">😍</button>
+          <button type="button">👍</button>
+          <button type="button">❤️</button>
+          <button type="button">🔥</button>
         </div>
       </form>
     </section>
@@ -260,7 +286,11 @@
           </button>
         </section>
 
-        <button class="friend-message-button" id="friendProfileMessageButton" type="button">Message</button>
+        <div class="friend-profile-actions">
+          <button class="friend-message-button" id="friendProfileMessageButton" type="button">Message</button>
+          <button class="friend-verify-button" id="friendProfileVerifyButton" type="button">Verify user</button>
+          <button class="friend-delete-button" id="friendProfileDeleteButton" type="button">Delete user</button>
+        </div>
       </article>
     </section>
 
@@ -277,15 +307,26 @@
     <section class="admin-users-overlay" id="adminUsersOverlay" aria-hidden="true">
       <article class="admin-users-panel" aria-label="All users">
         <header class="saved-header">
-          <h2>All users</h2>
           <button class="icon-button profile-back-button" id="adminUsersCloseButton" type="button" aria-label="Back">&lt;</button>
+          <h2>All users</h2>
         </header>
         <section class="saved-list" id="adminUsersList"></section>
+        <section class="admin-codes-panel" id="adminCodesPanel" aria-hidden="true">
+          <header>
+            <h3>Verification codes</h3>
+          </header>
+          <button class="admin-generate-button" id="generateCodesButton" type="button">Generate new codes</button>
+          <section class="admin-codes-list" id="adminCodesList"></section>
+        </section>
       </article>
     </section>
 
   </main>
 
-  <script type="module" src="script.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.5/firebase-database-compat.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>
