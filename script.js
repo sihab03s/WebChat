@@ -56,6 +56,78 @@ const onValue = (databaseRef, callback) => {
 };
 const onDisconnect = (databaseRef) => databaseRef.onDisconnect();
 
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+const encryptionKeyCache = new Map();
+const outgoingVisibleChats = new Map();
+const localConversationOrder = new Map();
+
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(value) {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes.buffer;
+}
+
+async function chatEncryptionKey(chatId) {
+  if (!chatId) throw new Error("Chat key pawa jay nai");
+  if (encryptionKeyCache.has(chatId)) return encryptionKeyCache.get(chatId);
+  const material = await crypto.subtle.digest("SHA-256", textEncoder.encode(`webchat-local-e2ee:${chatId}`));
+  const key = await crypto.subtle.importKey("raw", material, "AES-GCM", false, ["encrypt", "decrypt"]);
+  encryptionKeyCache.set(chatId, key);
+  return key;
+}
+
+async function encryptChatValue(chatId, value) {
+  if (!crypto?.subtle) {
+    return {
+      cipher: btoa(unescape(encodeURIComponent(String(value || "")))),
+      iv: "local-fallback",
+      fallback: true
+    };
+  }
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const key = await chatEncryptionKey(chatId);
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, textEncoder.encode(String(value || "")));
+  return {
+    cipher: arrayBufferToBase64(cipher),
+    iv: arrayBufferToBase64(iv.buffer)
+  };
+}
+
+async function decryptChatValue(chatId, payload) {
+  if (!payload?.cipher || !payload?.iv) return "";
+  if (payload.fallback || payload.iv === "local-fallback" || !crypto?.subtle) {
+    try {
+      return decodeURIComponent(escape(atob(payload.cipher)));
+    } catch (error) {
+      return "[Encrypted message]";
+    }
+  }
+  try {
+    const key = await chatEncryptionKey(chatId);
+    const plain = await crypto.subtle.decrypt({
+      name: "AES-GCM",
+      iv: new Uint8Array(base64ToArrayBuffer(payload.iv))
+    }, key, base64ToArrayBuffer(payload.cipher));
+    return textDecoder.decode(plain);
+  } catch (error) {
+    console.warn("Message decrypt failed", error);
+    return "[Encrypted message]";
+  }
+}
+
 const conversations = [
   {
     id: "nadia",
@@ -152,6 +224,7 @@ const messages = document.querySelector("#messages");
 const chatName = document.querySelector("#chatName");
 const chatStatus = document.querySelector("#chatStatus");
 const chatAvatar = document.querySelector("#chatAvatar");
+const chatAvatarWrap = document.querySelector("#chatAvatarWrap");
 const adminUsersButton = document.querySelector("#adminUsersButton");
 const adminUsersOverlay = document.querySelector("#adminUsersOverlay");
 const adminUsersCloseButton = document.querySelector("#adminUsersCloseButton");
@@ -177,6 +250,7 @@ const clearChatButton = document.querySelector("#clearChatButton");
 const backButton = document.querySelector("#backButton");
 const messageForm = document.querySelector("#messageForm");
 const messageInput = document.querySelector("#messageInput");
+const messageInputWrap = document.querySelector(".message-input-wrap");
 const emojiButton = document.querySelector("#emojiButton");
 const emojiMenu = document.querySelector("#emojiMenu");
 const attachmentButton = document.querySelector("#attachmentButton");
@@ -193,6 +267,8 @@ const profileButton = document.querySelector("#profileButton");
 const profileOverlay = document.querySelector("#profileOverlay");
 const profileBackdrop = document.querySelector("#profileBackdrop");
 const profileCloseButton = document.querySelector("#profileCloseButton");
+const profilePanel = document.querySelector("#profileOverlay .profile-panel");
+const profileEditButton = document.querySelector("#profileEditButton");
 const profilePhoto = document.querySelector("#profilePhoto");
 const profilePhotoButton = document.querySelector("#profilePhotoButton");
 const profilePhotoInput = document.querySelector("#profilePhotoInput");
@@ -222,7 +298,10 @@ const friendProfileBio = document.querySelector("#friendProfileBio");
 const friendProfileUsername = document.querySelector("#friendProfileUsername");
 const friendProfileNumber = document.querySelector("#friendProfileNumber");
 const friendProfileMessageButton = document.querySelector("#friendProfileMessageButton");
+const friendProfileReportButton = document.querySelector("#friendProfileReportButton");
+const friendProfileBlockButton = document.querySelector("#friendProfileBlockButton");
 const friendProfileVerifyButton = document.querySelector("#friendProfileVerifyButton");
+const friendProfilePasswordButton = document.querySelector("#friendProfilePasswordButton");
 const friendProfileDeleteButton = document.querySelector("#friendProfileDeleteButton");
 const savedOverlay = document.querySelector("#savedOverlay");
 const savedTitle = document.querySelector("#savedTitle");
@@ -240,6 +319,8 @@ let currentConversation = null;
 let longPressTimer;
 let longPressTriggered = false;
 let conversationHoldTimer;
+let pendingConversationPress = null;
+let lastConversationPointerOpenAt = 0;
 let activeConversationMenu;
 let activeConversationMenuAnchor = null;
 let activeConfirmDialog = null;
@@ -258,6 +339,7 @@ let currentSessionId = null;
 let activeMessageChatId = null;
 let activePresenceUserId = null;
 let seenAllowedChatId = null;
+let presenceRefreshTimer = null;
 let restoredUiState = false;
 let chatHistoryActive = false;
 let handlingHistoryPop = false;
@@ -265,9 +347,25 @@ let creatingSignupAccount = false;
 let resettingPasswordAccount = false;
 let pendingSignupProfile = null;
 let pendingSignupLogin = null;
+let pendingLoginNumber = "";
 let notificationStatePrimed = false;
 let startOnHomeAfterLogin = false;
+let notificationPermissionAsked = false;
+let voiceRecorder = null;
+let voiceChunks = [];
+let voiceStream = null;
+let voiceStartedAt = 0;
+let voiceTimer = null;
+let pendingVoiceBlob = null;
+let pendingVoiceUrl = "";
+let voiceDiscarding = false;
+let voiceMimeType = "audio/webm";
+let pendingPhotoFile = null;
+let pendingPhotoUrl = "";
 const lastNotificationKeys = new Map();
+const presenceStatusCache = new Map();
+const listPresenceUnsubscribers = new Map();
+const listPresenceTimers = new Map();
 
 const myProfile = {
   name: "Sihab Ahmed",
@@ -317,8 +415,12 @@ const demoUsers = [
   }
 ];
 
+function normalizePhoneNumber(number) {
+  return String(number || "").trim().replace(/[\s\-()]/g, "");
+}
+
 function numberToEmail(number) {
-  return `${number.trim()}@webchat.local`;
+  return `${normalizePhoneNumber(number)}@webchat.local`;
 }
 
 function numberToReusableEmail(number) {
@@ -327,9 +429,27 @@ function numberToReusableEmail(number) {
 }
 
 async function authEmailForNumber(number) {
-  const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(number)));
-  if (!numberSnapshot.exists()) return numberToEmail(number);
-  return numberSnapshot.data().authEmail || numberSnapshot.data().email || numberToEmail(number);
+  const cleanNumber = normalizePhoneNumber(number);
+  const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(cleanNumber)));
+  if (numberSnapshot.exists()) {
+    return numberSnapshot.data().authEmail || numberSnapshot.data().email || numberToEmail(cleanNumber);
+  }
+
+  const usersSnapshot = await getDocs(query(collection(db, "users"), where("number", "==", cleanNumber)));
+  const userDoc = usersSnapshot.docs[0];
+  if (userDoc) {
+    const userData = userDoc.data();
+    const authEmail = userData.authEmail || userData.email || numberToEmail(cleanNumber);
+    await setDoc(doc(db, "numbers", numberDocId(cleanNumber)), {
+      uid: userDoc.id,
+      number: cleanNumber,
+      authEmail,
+      email: authEmail
+    }, { merge: true }).catch(() => {});
+    return authEmail;
+  }
+
+  return numberToEmail(cleanNumber);
 }
 
 function normalizeSignupCode(code) {
@@ -351,7 +471,7 @@ function authPassword(password) {
 }
 
 function numberDocId(number) {
-  return number.trim().replaceAll("/", "_");
+  return normalizePhoneNumber(number).replaceAll("/", "_");
 }
 
 function chatIdFor(uidA, uidB) {
@@ -447,6 +567,10 @@ function readUiState() {
   } catch (error) {
     return null;
   }
+}
+
+function updateChatEmptyState() {
+  chatScreen.classList.toggle("empty-chat", !currentConversation);
 }
 
 function findConversationForState(state) {
@@ -733,10 +857,11 @@ function openPasswordResetDialog() {
   cancelButton.addEventListener("click", close);
   resetButton.addEventListener("click", async () => {
     resetButton.disabled = true;
+    message.classList.remove("success");
     message.textContent = "";
     try {
       await resetPasswordWithAdminCode({
-        number: loginNumber.value.trim(),
+        number: normalizePhoneNumber(loginNumber.value),
         password: newPassword.value,
         confirmPassword: confirmPassword.value,
         adminCode: normalizeSignupCode(codeInput.value)
@@ -764,6 +889,109 @@ function openPasswordResetDialog() {
   phoneShell.appendChild(overlay);
   activeConfirmDialog = overlay;
   newPassword.focus();
+}
+
+function openProfilePasswordDialog() {
+  if (!currentUser) return;
+  if (activeConfirmDialog) activeConfirmDialog.remove();
+  closeConversationMenu();
+  confirmOpenedAt = Date.now();
+
+  const overlay = document.createElement("section");
+  overlay.className = "confirm-overlay active";
+  overlay.setAttribute("aria-hidden", "false");
+
+  const dialog = document.createElement("article");
+  dialog.className = "confirm-dialog password-reset-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Change password";
+
+  const currentInput = document.createElement("input");
+  currentInput.type = "password";
+  currentInput.placeholder = "Current password";
+  currentInput.autocomplete = "current-password";
+
+  const newInput = document.createElement("input");
+  newInput.type = "password";
+  newInput.placeholder = "New password";
+  newInput.autocomplete = "new-password";
+
+  const confirmInput = document.createElement("input");
+  confirmInput.type = "password";
+  confirmInput.placeholder = "Confirm password";
+  confirmInput.autocomplete = "new-password";
+
+  const forgotButton = document.createElement("button");
+  forgotButton.type = "button";
+  forgotButton.className = "forgot-password-link password-dialog-forgot";
+  forgotButton.textContent = "Forget password";
+
+  const message = document.createElement("p");
+  message.className = "reset-message";
+
+  const actions = document.createElement("div");
+  actions.className = "confirm-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.textContent = "Cancel";
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.textContent = "Save";
+
+  const close = () => {
+    overlay.remove();
+    activeConfirmDialog = null;
+    confirmOpenedAt = 0;
+  };
+
+  cancelButton.addEventListener("click", close);
+  forgotButton.addEventListener("click", () => {
+    close();
+    if (!loginNumber.value.trim()) loginNumber.value = myProfile.number || currentUser.number || "";
+    openPasswordResetDialog();
+  });
+  saveButton.addEventListener("click", async () => {
+    message.textContent = "";
+    if (!currentInput.value || !newInput.value || !confirmInput.value) {
+      message.textContent = "Current, new ar confirm password dao";
+      return;
+    }
+    if (newInput.value !== confirmInput.value) {
+      message.textContent = "Confirm password match kore nai";
+      return;
+    }
+
+    saveButton.disabled = true;
+    try {
+      if (firebaseUser) {
+        await reauthenticateWithPassword(firebaseUser, authPassword(currentInput.value));
+        await updatePassword(firebaseUser, authPassword(newInput.value));
+      }
+      close();
+      window.alert("Password changed");
+    } catch (error) {
+      message.textContent = "Current password thik na ba abar login kore try koro";
+      saveButton.disabled = false;
+    }
+  });
+
+  actions.append(cancelButton, saveButton);
+  dialog.append(
+    heading,
+    createResetField("Current password", createPasswordField(currentInput)),
+    createResetField("New password", createPasswordField(newInput)),
+    createResetField("Confirm password", createPasswordField(confirmInput)),
+    forgotButton,
+    message,
+    actions
+  );
+  overlay.appendChild(dialog);
+  phoneShell.appendChild(overlay);
+  activeConfirmDialog = overlay;
+  currentInput.focus();
 }
 
 async function updateSignupPhoto() {
@@ -856,15 +1084,25 @@ function showInAppNotification(conversation) {
   window.setTimeout(() => toast.remove(), 3800);
 }
 
+async function requestSystemNotificationPermission() {
+  if (notificationPermissionAsked || !("Notification" in window)) return;
+  notificationPermissionAsked = true;
+  try {
+    if (Notification.permission === "default") {
+      await Notification.requestPermission();
+    }
+  } catch (error) {
+  }
+}
+
 async function notifyIncomingMessage(conversation) {
   if (!conversation || conversation.muted) return;
-  showInAppNotification(conversation);
   playNotificationSound();
 
   if (!("Notification" in window)) return;
   try {
     if (Notification.permission === "default") {
-      await Notification.requestPermission();
+      await requestSystemNotificationPermission();
     }
     if (Notification.permission === "granted") {
       new Notification(conversation.name, {
@@ -934,7 +1172,7 @@ function showSignupComplete(profile) {
 function applyUserProfile(user) {
   currentUser = user;
   Object.assign(myProfile, user.profile, { editable: true });
-  profileButton.querySelector("img").src = myProfile.avatar;
+  profileButton.querySelector("img").src = myProfile.avatar || defaultAvatar;
 }
 
 function persistCurrentUserProfile() {
@@ -947,20 +1185,29 @@ function persistCurrentUserProfile() {
 }
 
 async function createUserProfileDocument(userCredential, number, name, authEmail = userCredential.user.email) {
-  const profile = createProfile(name, number);
+  const cleanNumber = normalizePhoneNumber(number);
+  const profile = createProfile(name, cleanNumber);
   const uid = userCredential.user.uid;
   const payload = {
     uid,
-    number,
     email: authEmail,
     authEmail,
     ...profilePayload(profile),
+    number: cleanNumber,
     createdAt: firestoreServerTimestamp(),
     updatedAt: firestoreServerTimestamp()
   };
 
-  await setDoc(doc(db, "users", uid), payload, { merge: true });
-  await setDoc(doc(db, "numbers", numberDocId(number)), { uid, number, authEmail, email: authEmail });
+  await db.runTransaction(async (transaction) => {
+    const numberRef = doc(db, "numbers", numberDocId(cleanNumber));
+    const userRef = doc(db, "users", uid);
+    const numberSnapshot = await transaction.get(numberRef);
+    if (numberSnapshot.exists && numberSnapshot.data()?.uid !== uid) {
+      throw new Error("number-exists");
+    }
+    transaction.set(userRef, payload, { merge: true });
+    transaction.set(numberRef, { uid, number: cleanNumber, authEmail, email: authEmail });
+  });
   return normalizeUserDoc(uid, payload);
 }
 
@@ -995,7 +1242,69 @@ async function migrateUserIdentity(oldUid, newUid) {
   await deleteDoc(doc(db, "users", oldUid)).catch(() => {});
 }
 
+async function createAuthAccountWithoutSwitching(email, password) {
+  const response = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${firebaseConfig.apiKey}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      email,
+      password: authPassword(password),
+      returnSecureToken: false
+    })
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error?.message || "Auth account create hoy nai");
+  }
+  return {
+    uid: data.localId,
+    email
+  };
+}
+
+async function changeUserPasswordAsAdmin(user, password, confirmPassword) {
+  if (!isAdminAccount()) throw new Error("Admin account lagbe");
+  if (!user?.uid || !user.number) throw new Error("User pawa jay nai");
+  if (!password || !confirmPassword) throw new Error("New password ar confirm password dao");
+  if (password !== confirmPassword) throw new Error("Confirm password match kore nai");
+
+  const number = normalizePhoneNumber(user.number);
+  const oldUid = user.uid;
+  const oldProfileSnapshot = await getDoc(doc(db, "users", oldUid));
+  const oldProfile = oldProfileSnapshot.exists()
+    ? normalizeUserDoc(oldUid, oldProfileSnapshot.data()).profile
+    : user.profile || createProfile(user.profile?.name || number, number);
+  const authEmail = numberToReusableEmail(number);
+  const credential = await createAuthAccountWithoutSwitching(authEmail, password);
+  const newUid = credential.uid;
+
+  await setDoc(doc(db, "users", newUid), {
+    uid: newUid,
+    number,
+    email: authEmail,
+    authEmail,
+    ...profilePayload({ ...oldProfile, number }),
+    createdAt: oldProfileSnapshot.data?.()?.createdAt || firestoreServerTimestamp(),
+    updatedAt: firestoreServerTimestamp()
+  }, { merge: true });
+  await setDoc(doc(db, "numbers", numberDocId(number)), { uid: newUid, number, authEmail, email: authEmail }, { merge: true });
+  await migrateUserIdentity(oldUid, newUid);
+
+  conversations.forEach((conversation) => {
+    if (conversation.userId !== oldUid) return;
+    conversation.userId = newUid;
+    conversation.number = number;
+  });
+  if (activeFriendProfile?.userId === oldUid) {
+    activeFriendProfile.userId = newUid;
+    activeFriendProfile.number = number;
+  }
+}
+
 async function resetPasswordWithAdminCode({ number, password, confirmPassword, adminCode }) {
+  number = normalizePhoneNumber(number);
   if (!number) throw new Error("Number dao");
   if (!password || !confirmPassword || !adminCode) throw new Error("New password, confirm password ar admin code lagbe");
   if (password !== confirmPassword) throw new Error("Confirm password match kore nai");
@@ -1070,6 +1379,7 @@ function completeLogin(user) {
   conversations.length = 0;
   currentConversation = null;
   subscribeToMyChats();
+  updateChatEmptyState();
   renderConversations(searchInput.value);
   messages.innerHTML = "";
 }
@@ -1134,6 +1444,9 @@ function resetSessionView(showLogin = false) {
   if (unsubscribePresence) unsubscribePresence();
   if (unsubscribeConnection) unsubscribeConnection();
   if (unsubscribeUserSession) unsubscribeUserSession();
+  window.clearTimeout(presenceRefreshTimer);
+  clearListPresenceSubscriptions();
+  presenceStatusCache.clear();
   lastNotificationKeys.clear();
   notificationStatePrimed = false;
   unsubscribeChats = null;
@@ -1141,6 +1454,7 @@ function resetSessionView(showLogin = false) {
   unsubscribePresence = null;
   unsubscribeConnection = null;
   unsubscribeUserSession = null;
+  presenceRefreshTimer = null;
   currentSessionId = null;
   activeMessageChatId = null;
   activePresenceUserId = null;
@@ -1150,9 +1464,11 @@ function resetSessionView(showLogin = false) {
   handlingHistoryPop = false;
   currentUser = null;
   firebaseUser = null;
+  pendingLoginNumber = "";
   currentConversation = null;
   startOnHomeAfterLogin = false;
   conversations.length = 0;
+  profileButton.querySelector("img").src = defaultAvatar;
   closeHomeOptions();
   closeChatOptions();
   closeAttachmentMenu();
@@ -1176,6 +1492,8 @@ function resetSessionView(showLogin = false) {
   chatStatus.textContent = "";
   chatAvatar.removeAttribute("src");
   chatAvatar.alt = "";
+  chatAvatarWrap.classList.remove("active", "offline");
+  updateChatEmptyState();
 
   if (showLogin) {
     phoneShell.classList.remove("auth-pending");
@@ -1187,8 +1505,9 @@ function resetSessionView(showLogin = false) {
 
 async function handleLogin(event) {
   event.preventDefault();
+  requestSystemNotificationPermission();
   setAuthLoading(loginSubmitButton, true);
-  const number = loginNumber.value.trim();
+  const number = normalizePhoneNumber(loginNumber.value);
   const password = loginPassword.value;
 
   if (!number || !password) {
@@ -1198,6 +1517,7 @@ async function handleLogin(event) {
   }
 
   try {
+    pendingLoginNumber = number;
     await signInWithEmailAndPassword(auth, await authEmailForNumber(number), authPassword(password));
   } catch (error) {
     const isDemo = (number === "0" && password === "0") || (number === "1" && password === "1");
@@ -1209,11 +1529,23 @@ async function handleLogin(event) {
 
     try {
       const demo = demoUsers.find((item) => item.number === number);
-      const authEmail = numberToEmail(number);
+      const authEmail = number === "0" ? numberToReusableEmail(number) : numberToEmail(number);
+      pendingLoginNumber = number;
       const credential = await createUserWithEmailAndPassword(auth, authEmail, authPassword(password));
       await createUserProfileDocument(credential, number, demo.profile.name, authEmail);
     } catch (createError) {
-      setAuthMessage("Demo account ready na, abar try koro");
+      if (number === "0" && createError.code === "auth/email-already-in-use") {
+        try {
+          const authEmail = numberToReusableEmail(number);
+          pendingLoginNumber = number;
+          const credential = await createUserWithEmailAndPassword(auth, authEmail, authPassword(password));
+          await createUserProfileDocument(credential, number, "Sihab Ahmed", authEmail);
+          return;
+        } catch (recreateError) {
+          console.warn("Admin recreate failed", recreateError);
+        }
+      }
+      setAuthMessage(number === "0" ? "Admin recreate hoy nai. Firebase rules check koro." : "Demo account ready na, abar try koro");
       setAuthLoading(loginSubmitButton, false);
     }
   }
@@ -1221,9 +1553,10 @@ async function handleLogin(event) {
 
 async function handleSignup(event) {
   event.preventDefault();
+  requestSystemNotificationPermission();
   setAuthLoading(signupSubmitButton, true);
   const name = signupName.value.trim();
-  const number = signupNumber.value.trim();
+  const number = normalizePhoneNumber(signupNumber.value);
   const password = signupPassword.value;
   const confirmPassword = signupConfirmPassword.value;
   const adminCode = normalizeSignupCode(signupAdminCode.value);
@@ -1278,6 +1611,8 @@ async function handleSignup(event) {
       setAuthMessage("Admin verification code thik na");
     } else if (error.message === "used-code") {
       setAuthMessage("Ei admin code already used/expired");
+    } else if (error.message === "number-exists") {
+      setAuthMessage("Ei number diye account ache");
     } else {
       setAuthMessage(error.code === "auth/email-already-in-use" ? "Ei number diye account ache" : "Signup hoy nai");
     }
@@ -1289,28 +1624,26 @@ async function handleSignup(event) {
 
 async function logout() {
   const uid = firebaseUser?.uid;
-
-  await clearCurrentUserSession(uid);
-  resetSessionView(true);
-  loginPassword.value = "";
-
+  profileLogoutButton.classList.add("loading");
+  profileLogoutButton.disabled = true;
   try {
+    await clearCurrentUserSession(uid);
     if (uid) {
       await set(ref(realtimeDb, `status/${uid}`), {
         state: "offline",
         lastChanged: databaseServerTimestamp()
       });
     }
-  } catch (error) {
-    console.warn("Status offline update failed", error);
-  }
-
-  try {
     await signOut(auth);
   } catch (error) {
     console.error("Logout failed", error);
+  } finally {
+    profileLogoutButton.classList.remove("loading");
+    profileLogoutButton.disabled = false;
+    resetSessionView(true);
+    loginPassword.value = "";
+    loginNumber.focus();
   }
-  loginNumber.focus();
 }
 
 function initializeAuth() {
@@ -1329,11 +1662,16 @@ function initializeAuth() {
     }
 
     const keepLoginSpinner = loginSubmitButton.classList.contains("loading");
+    const loginNumberForRecovery = pendingLoginNumber;
     resetSessionView(false);
+    pendingLoginNumber = loginNumberForRecovery;
     if (keepLoginSpinner) setAuthLoading(loginSubmitButton, true);
     phoneShell.classList.add("auth-pending");
     firebaseUser = authUser;
-    const profile = await loadUserProfile(authUser.uid);
+    let profile = await loadUserProfile(authUser.uid);
+    if (!profile && pendingLoginNumber === "0") {
+      profile = await createUserProfileDocument({ user: authUser }, "0", "Sihab Ahmed", authUser.email || numberToEmail("0")).catch(() => null);
+    }
     if (!profile) {
       phoneShell.classList.remove("auth-pending");
       await signOut(auth);
@@ -1346,6 +1684,7 @@ function initializeAuth() {
     phoneShell.classList.remove("auth-pending");
     await setupSingleUserSession(authUser.uid);
     completeLogin(profile);
+    pendingLoginNumber = "";
     setupPresence(authUser.uid);
   });
 }
@@ -1368,6 +1707,102 @@ function setupPresence(uid) {
   });
 }
 
+function applyPresenceStatus(userId, nextStatus) {
+  presenceStatusCache.set(userId, nextStatus);
+  conversations.forEach((item) => {
+    if (item.userId === userId) item.status = nextStatus;
+  });
+  if (currentConversation?.userId === userId) {
+    currentConversation.status = nextStatus;
+    renderMessages();
+  }
+  renderConversations(searchInput.value);
+}
+
+function schedulePresenceRefresh(userId, value) {
+  window.clearTimeout(presenceRefreshTimer);
+  presenceRefreshTimer = null;
+  if (value?.state !== "offline") return;
+  const lastChanged = typeof value?.lastChanged === "number" ? value.lastChanged : 0;
+  if (!lastChanged) return;
+  const remaining = 10000 - Math.max(0, Date.now() - lastChanged);
+  const delay = Math.max(0, remaining) + 100;
+  presenceRefreshTimer = window.setTimeout(async () => {
+    if (activePresenceUserId !== userId) return;
+    try {
+      const statusSnapshot = await ref(realtimeDb, `status/${userId}`).get();
+      const latestValue = statusSnapshot.val();
+      if (activePresenceUserId !== userId) return;
+      applyPresenceStatus(userId, formatPresenceStatus(latestValue, true));
+      schedulePresenceRefresh(userId, latestValue);
+    } catch (error) {
+      applyPresenceStatus(userId, formatPresenceStatus(value, true));
+    }
+  }, delay);
+}
+
+function scheduleListPresenceRefresh(userId, value) {
+  window.clearTimeout(listPresenceTimers.get(userId));
+  listPresenceTimers.delete(userId);
+  if (value?.state !== "offline") return;
+  const lastChanged = typeof value?.lastChanged === "number" ? value.lastChanged : 0;
+  if (!lastChanged) return;
+  const remaining = 10000 - Math.max(0, Date.now() - lastChanged);
+  const delay = Math.max(0, remaining) + 100;
+  const timer = window.setTimeout(async () => {
+    try {
+      const statusSnapshot = await ref(realtimeDb, `status/${userId}`).get();
+      const latestValue = statusSnapshot.val();
+      applyPresenceStatus(userId, formatPresenceStatus(latestValue, true));
+      scheduleListPresenceRefresh(userId, latestValue);
+    } catch (error) {
+      applyPresenceStatus(userId, formatPresenceStatus(value, true));
+    }
+  }, delay);
+  listPresenceTimers.set(userId, timer);
+}
+
+function clearListPresenceSubscriptions() {
+  listPresenceUnsubscribers.forEach((unsubscribe) => unsubscribe());
+  listPresenceUnsubscribers.clear();
+  listPresenceTimers.forEach((timer) => window.clearTimeout(timer));
+  listPresenceTimers.clear();
+}
+
+function syncListPresenceSubscriptions(rows) {
+  const nextUserIds = new Set(rows.map((row) => row.userId).filter(Boolean));
+  listPresenceUnsubscribers.forEach((unsubscribe, userId) => {
+    if (nextUserIds.has(userId)) return;
+    unsubscribe();
+    listPresenceUnsubscribers.delete(userId);
+    window.clearTimeout(listPresenceTimers.get(userId));
+    listPresenceTimers.delete(userId);
+  });
+  nextUserIds.forEach((userId) => {
+    if (listPresenceUnsubscribers.has(userId)) return;
+    const unsubscribe = onValue(ref(realtimeDb, `status/${userId}`), (snapshot) => {
+      const value = snapshot.val();
+      applyPresenceStatus(userId, formatPresenceStatus(value));
+      scheduleListPresenceRefresh(userId, value);
+    });
+    listPresenceUnsubscribers.set(userId, unsubscribe);
+  });
+}
+
+async function getPresenceStatusForUser(userId, fallback = "Offline") {
+  if (!userId) return fallback;
+  const cached = presenceStatusCache.get(userId);
+  if (cached) return cached;
+  try {
+    const statusSnapshot = await ref(realtimeDb, `status/${userId}`).get();
+    const nextStatus = formatPresenceStatus(statusSnapshot.val());
+    presenceStatusCache.set(userId, nextStatus);
+    return nextStatus;
+  } catch (error) {
+    return fallback;
+  }
+}
+
 async function subscribeToMyChats() {
   if (!firebaseUser) return;
   if (unsubscribeChats) unsubscribeChats();
@@ -1375,6 +1810,7 @@ async function subscribeToMyChats() {
   const ownerUid = firebaseUser.uid;
   const chatsQuery = query(collection(db, "chats"), where("participants", "array-contains", ownerUid));
   unsubscribeChats = onSnapshot(chatsQuery, async (snapshot) => {
+    const hiddenLocal = readHiddenConversations(ownerUid);
     const rows = await Promise.all(snapshot.docs.map(async (chatDoc) => {
       const data = chatDoc.data();
       if (data.hiddenBy?.[ownerUid]) return null;
@@ -1382,18 +1818,33 @@ async function subscribeToMyChats() {
       const userSnapshot = await getDoc(doc(db, "users", otherUid));
       if (!userSnapshot.exists()) return null;
       const otherUser = normalizeUserDoc(otherUid, userSnapshot.data());
-      const updatedAt = data.updatedAt?.toMillis?.() || 0;
+      const updatedAt = Math.max(data.updatedAt?.toMillis?.() || 0, localConversationOrder.get(chatDoc.id) || 0);
+      const localLast = readLocalMessages(ownerUid, chatDoc.id).at(-1);
+      const remoteLastMessage = data.hiddenLastBy?.[ownerUid]?.text || data.lastMessage || "";
+      const remoteLastSender = data.hiddenLastBy?.[ownerUid]?.senderId ?? data.lastSenderId ?? "";
+      const isOpenChat = currentConversation?.chatId === chatDoc.id;
+      if (!localLast && !remoteLastMessage) return null;
+      const hiddenAt = hiddenLocal[chatDoc.id] || 0;
+      if (hiddenAt && (remoteLastSender === ownerUid || !updatedAt || updatedAt <= hiddenAt)) return null;
+      if (hiddenAt && remoteLastSender !== ownerUid && updatedAt > hiddenAt) showConversationLocally(ownerUid, chatDoc.id);
+      const cachedStatus = await getPresenceStatusForUser(
+        otherUid,
+        conversations.find((item) => item.userId === otherUid)?.status || otherUser.profile.status
+      );
+      otherUser.profile.status = cachedStatus;
       return {
         ...userToConversation(otherUser, chatDoc.id, {
           time: data.hiddenLastBy?.[ownerUid]?.time || data.lastTime || "Now"
         }),
         messages: [],
         messagesLoaded: false,
-        lastMessage: data.hiddenLastBy?.[ownerUid]?.text ?? data.lastMessage ?? "",
-        lastSenderId: data.hiddenLastBy?.[ownerUid]?.senderId ?? data.lastSenderId ?? "",
+        lastMessage: localLast?.text || remoteLastMessage,
+        lastSenderId: remoteLastSender,
+        seenBy: data.seenBy || {},
+        reactionsByMessage: data.reactionsByMessage || {},
         pinned: !!data.pinnedBy?.[ownerUid],
         pinnedAt: data.pinnedAtBy?.[ownerUid] || 0,
-        unread: data.unreadBy?.[ownerUid] || 0,
+        unread: isOpenChat ? 0 : data.unreadBy?.[ownerUid] || 0,
         muted: !!data.mutedBy?.[ownerUid],
         restricted: !!otherUser.profile.restricted,
         updatedAt
@@ -1402,6 +1853,7 @@ async function subscribeToMyChats() {
 
     if (firebaseUser?.uid !== ownerUid) return;
     const visibleRows = rows.filter(Boolean);
+    syncListPresenceSubscriptions(visibleRows);
     visibleRows.forEach((row) => {
       const key = `${row.lastSenderId || ""}|${row.lastMessage || ""}`;
       const previousKey = lastNotificationKeys.get(row.chatId);
@@ -1414,9 +1866,27 @@ async function subscribeToMyChats() {
 
     conversations.length = 0;
     visibleRows.forEach((row) => conversations.push(row));
+    consumeVisibleOutgoingRows(visibleRows).forEach((row) => conversations.push(row));
     sortConversations();
+    if (currentConversation?.pendingRemoteChat && !conversations.some((item) => item.id === currentConversation.id)) {
+      conversations.unshift(currentConversation);
+    }
     if (!currentConversation || !conversations.some((item) => item.id === currentConversation.id)) {
       currentConversation = null;
+    } else {
+      const updatedCurrent = conversations.find((item) => item.id === currentConversation.id);
+      if (updatedCurrent) {
+        Object.assign(currentConversation, {
+          seenBy: updatedCurrent.seenBy || currentConversation.seenBy,
+          unread: 0,
+          lastMessage: currentConversation.lastMessage || updatedCurrent.lastMessage,
+          lastSenderId: currentConversation.lastSenderId || updatedCurrent.lastSenderId,
+          reactionsByMessage: updatedCurrent.reactionsByMessage || currentConversation.reactionsByMessage || {}
+        });
+        applySeenState(currentConversation);
+        applyConversationReactions(currentConversation);
+        if (currentConversation.messagesLoaded) renderMessages();
+      }
     }
     if (!currentConversation) {
       messages.innerHTML = "";
@@ -1424,7 +1894,9 @@ async function subscribeToMyChats() {
       chatStatus.textContent = "";
       chatAvatar.removeAttribute("src");
       chatAvatar.alt = "";
+      chatAvatarWrap.classList.remove("active", "offline");
     }
+    updateChatEmptyState();
     renderConversations(searchInput.value);
     restoreUiState();
   });
@@ -1438,24 +1910,28 @@ function subscribeToMessages(conversation) {
   const chatId = conversation.chatId;
   const ownerUid = firebaseUser?.uid;
   const messagesQuery = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt"));
-  unsubscribeMessages = onSnapshot(messagesQuery, (snapshot) => {
+  unsubscribeMessages = onSnapshot(messagesQuery, async (snapshot) => {
     if (activeMessageChatId !== chatId || currentConversation?.chatId !== chatId || firebaseUser?.uid !== ownerUid) return;
     const hiddenIds = new Set();
-    const remoteMessages = snapshot.docs
-      .map((messageDoc, index) => {
+    const remoteMessages = (await Promise.all(snapshot.docs
+      .map(async (messageDoc, index) => {
         const data = messageDoc.data();
         if (data.hiddenFor?.[ownerUid]) {
           hiddenIds.add(messageDoc.id);
           return null;
         }
-        return normalizeMessageDoc(messageDoc, ownerUid, index);
-      })
+        return normalizeMessageDoc(messageDoc, ownerUid, index, chatId);
+      })))
       .filter(Boolean);
 
     conversation.messages = pendingLocalClears.has(localMessagesKey(ownerUid, chatId))
       ? []
       : mergeLocalMessages(ownerUid, chatId, remoteMessages, hiddenIds);
+    applySeenState(conversation);
+    applyConversationReactions(conversation);
+    writeLocalMessages(ownerUid, chatId, conversation.messages);
     conversation.messagesLoaded = true;
+    cleanupCachedRemoteMessages(chatId, remoteMessages).catch((error) => console.warn("Encrypted remote cleanup failed", error));
     deleteExpiredMessages(chatId, snapshot.docs);
     renderMessages();
     renderConversations(searchInput.value);
@@ -1469,21 +1945,67 @@ function localMessagesKey(uid, chatId) {
   return `webchatLocalMessages:${uid}:${chatId}`;
 }
 
-function normalizeMessageDoc(messageDoc, ownerUid, index = 0) {
+function hiddenConversationsKey(uid) {
+  return `webchatHiddenConversations:${uid}`;
+}
+
+function readHiddenConversations(uid) {
+  if (!uid) return {};
+  try {
+    const value = localStorage.getItem(hiddenConversationsKey(uid));
+    const parsed = value ? JSON.parse(value) : {};
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch (error) {
+    return {};
+  }
+}
+
+function writeHiddenConversations(uid, value) {
+  if (!uid) return;
+  try {
+    localStorage.setItem(hiddenConversationsKey(uid), JSON.stringify(value || {}));
+  } catch (error) {
+    console.warn("Hidden conversation cache full", error);
+  }
+}
+
+function hideConversationLocally(uid, chatId) {
+  if (!uid || !chatId) return;
+  const hidden = readHiddenConversations(uid);
+  hidden[chatId] = Date.now();
+  writeHiddenConversations(uid, hidden);
+}
+
+function showConversationLocally(uid, chatId) {
+  if (!uid || !chatId) return;
+  const hidden = readHiddenConversations(uid);
+  if (!hidden[chatId]) return;
+  delete hidden[chatId];
+  writeHiddenConversations(uid, hidden);
+}
+
+async function normalizeMessageDoc(messageDoc, ownerUid, index = 0, chatId = "") {
   const data = messageDoc.data();
   const createdAtMs = data.createdAt?.toMillis?.() || data.localCreatedAtMs || 0;
   const fromMe = data.senderId === ownerUid;
+  const encrypted = !!data.encrypted;
+  const text = encrypted ? await decryptChatValue(chatId, data.textCipher) : data.text;
+  const url = encrypted && data.urlCipher ? await decryptChatValue(chatId, data.urlCipher) : data.url || "";
+  const fileName = encrypted && data.fileNameCipher ? await decryptChatValue(chatId, data.fileNameCipher) : data.fileName || "";
   return {
     id: messageDoc.id,
     from: fromMe ? "me" : "them",
     senderId: data.senderId,
-    text: data.text,
+    receiverId: data.receiverId,
+    encrypted,
+    text,
     type: data.type || "text",
-    url: data.url || "",
-    fileName: data.fileName || "",
+    url,
+    fileName,
     time: data.time || "Now",
     date: data.date || "Today",
     status: data.status || "sent",
+    reaction: data.reaction || "",
     createdAtMs,
     localOrder: createdAtMs || index
   };
@@ -1531,10 +2053,12 @@ function mergeLocalMessages(uid, chatId, remoteMessages, hiddenIds = new Set()) 
   });
   remoteMessages.forEach((message, index) => {
     if (!message?.id || hiddenIds.has(message.id)) return;
+    const existing = merged.get(message.id);
     merged.set(message.id, {
-      ...merged.get(message.id),
+      ...existing,
       ...message,
-      localOrder: message.createdAtMs || message.localOrder || index
+      createdAtMs: message.createdAtMs || existing?.createdAtMs || existing?.localOrder || message.localOrder || index,
+      localOrder: message.createdAtMs || existing?.createdAtMs || existing?.localOrder || message.localOrder || index
     });
   });
   const messagesList = [...merged.values()].sort((a, b) => {
@@ -1542,6 +2066,55 @@ function mergeLocalMessages(uid, chatId, remoteMessages, hiddenIds = new Set()) 
   });
   writeLocalMessages(uid, chatId, messagesList);
   return messagesList;
+}
+
+function applySeenState(conversation) {
+  if (!conversation || !firebaseUser) return;
+  const seenAt = conversation.seenBy?.[conversation.userId] || 0;
+  if (!seenAt) return;
+  conversation.messages.forEach((message) => {
+    if (message.from !== "me") return;
+    const messageTime = message.createdAtMs || message.localOrder || 0;
+    if (messageTime && messageTime <= seenAt) message.status = "seen";
+  });
+}
+
+function getMessageReaction(reactionEntry) {
+  if (!reactionEntry || typeof reactionEntry !== "object") return "";
+  return Object.values(reactionEntry).find((reaction) => reaction === "heart") || "";
+}
+
+function applyConversationReactions(conversation) {
+  if (!conversation?.messages) return;
+  const reactionsByMessage = conversation.reactionsByMessage || {};
+  conversation.messages.forEach((message) => {
+    if (!message?.id || !Object.prototype.hasOwnProperty.call(reactionsByMessage, message.id)) return;
+    message.reactionsBy = reactionsByMessage[message.id] || {};
+    message.reaction = getMessageReaction(message.reactionsBy);
+  });
+}
+
+function setLocalMessageReaction(conversation, message, reactionValue) {
+  if (!conversation || !message || !firebaseUser) return;
+  conversation.reactionsByMessage = conversation.reactionsByMessage || {};
+  const currentEntry = conversation.reactionsByMessage[message.id] || {};
+  conversation.reactionsByMessage[message.id] = {
+    ...currentEntry,
+    [firebaseUser.uid]: reactionValue
+  };
+  message.reactionsBy = conversation.reactionsByMessage[message.id];
+  message.reaction = getMessageReaction(message.reactionsBy);
+}
+
+async function syncMessageReaction(conversation, message, reactionValue) {
+  if (!firebaseUser || !conversation?.chatId || !message?.id) return;
+  try {
+    await updateDoc(doc(db, "chats", conversation.chatId), {
+      [`reactionsByMessage.${message.id}.${firebaseUser.uid}`]: reactionValue
+    });
+  } catch (error) {
+    console.warn("Message reaction sync failed", error);
+  }
 }
 
 function removeLocalMessage(uid, chatId, messageId) {
@@ -1552,6 +2125,35 @@ function removeLocalMessage(uid, chatId, messageId) {
 function clearLocalMessages(uid, chatId) {
   if (!uid || !chatId) return;
   localStorage.removeItem(localMessagesKey(uid, chatId));
+}
+
+function keepOutgoingConversationVisible(conversation, ttl = 12000) {
+  if (!conversation?.chatId) return;
+  outgoingVisibleChats.set(conversation.chatId, {
+    conversation,
+    expiresAt: Date.now() + ttl
+  });
+}
+
+function consumeVisibleOutgoingRows(existingRows = []) {
+  const existingIds = new Set(existingRows.map((row) => row.chatId || row.id));
+  const now = Date.now();
+  const rows = [];
+  outgoingVisibleChats.forEach((entry, chatId) => {
+    if (entry.expiresAt <= now) {
+      outgoingVisibleChats.delete(chatId);
+      return;
+    }
+    if (!existingIds.has(chatId) && entry.conversation) rows.push(entry.conversation);
+  });
+  return rows;
+}
+
+async function cleanupCachedRemoteMessages(chatId, messagesList) {
+  if (!chatId || !firebaseUser) return;
+  await Promise.all(messagesList
+    .filter((message) => message.encrypted && message.senderId && message.senderId !== firebaseUser.uid)
+    .map((message) => deleteDoc(doc(db, "chats", chatId, "messages", message.id)).catch(() => {})));
 }
 
 function deleteExpiredMessages(chatId, messageDocs) {
@@ -1578,42 +2180,60 @@ function canMarkConversationSeen(conversation) {
 function markConversationSeen(conversation) {
   if (!canMarkConversationSeen(conversation)) return;
 
+  let changed = false;
   conversation.messages.forEach((message) => {
     if (message.from === "me" || message.status === "seen") return;
     if (message.createdAtMs && message.createdAtMs <= Date.now() - messageRetentionMs) return;
     message.status = "seen";
+    changed = true;
     updateDoc(doc(db, "chats", conversation.chatId, "messages", message.id), {
       status: "seen"
-    });
+    }).catch(() => {});
   });
+  conversation.unread = 0;
+  const seenAt = Date.now();
+  conversation.seenBy = {
+    ...(conversation.seenBy || {}),
+    [firebaseUser.uid]: seenAt
+  };
+  setDoc(doc(db, "chats", conversation.chatId), {
+    seenBy: {
+      [firebaseUser.uid]: seenAt
+    },
+    unreadBy: {
+      [firebaseUser.uid]: 0
+    }
+  }, { merge: true }).catch(() => {});
   writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+  if (changed) renderConversations(searchInput.value);
 }
 
 function subscribeToPresence(conversation) {
   if (unsubscribePresence) unsubscribePresence();
+  window.clearTimeout(presenceRefreshTimer);
+  presenceRefreshTimer = null;
   activePresenceUserId = conversation?.userId || null;
   if (!conversation?.userId) return;
 
   const userId = conversation.userId;
   unsubscribePresence = onValue(ref(realtimeDb, `status/${userId}`), (snapshot) => {
     if (activePresenceUserId !== userId) return;
-    const nextStatus = formatPresenceStatus(snapshot.val());
+    const value = snapshot.val();
+    const nextStatus = formatPresenceStatus(value);
     conversation.status = nextStatus;
-    conversations.forEach((item) => {
-      if (item.userId === userId) item.status = nextStatus;
-    });
-    if (currentConversation?.userId === userId) renderMessages();
-    renderConversations(searchInput.value);
+    applyPresenceStatus(userId, nextStatus);
+    schedulePresenceRefresh(userId, value);
   });
 }
 
-function formatPresenceStatus(value) {
+function formatPresenceStatus(value, confirmedOffline = false) {
   if (value?.state === "online") return "Active now";
 
   const lastChanged = typeof value?.lastChanged === "number" ? value.lastChanged : 0;
   if (!lastChanged) return "Offline";
 
   const elapsed = Math.max(0, Date.now() - lastChanged);
+  if (value?.state === "offline" && !confirmedOffline && elapsed < 10000) return "Active now";
   const minutes = Math.floor(elapsed / 60000);
 
   if (minutes < 1) return "Active moments ago";
@@ -1647,7 +2267,7 @@ async function syncVisibleLastMessage(conversation) {
   await setDoc(doc(db, "chats", conversation.chatId), {
     hiddenLastBy: {
       [firebaseUser.uid]: {
-        text: conversation.lastMessage,
+        text: conversation.lastMessage ? (latestVisibleMessage?.type === "photo" ? "Photo" : "Message") : "",
         senderId: conversation.lastSenderId,
         time: conversation.lastMessage ? "Now" : ""
       }
@@ -1658,6 +2278,9 @@ async function syncVisibleLastMessage(conversation) {
 
 function moveConversationToTop(conversation) {
   conversation.updatedAt = Date.now();
+  if (conversation.chatId || conversation.id) {
+    localConversationOrder.set(conversation.chatId || conversation.id, conversation.updatedAt);
+  }
   const index = conversations.findIndex((item) => item.id === conversation.id);
   if (index >= 0) {
     conversations.splice(index, 1);
@@ -1693,17 +2316,14 @@ function renderConversations(filter = "") {
     })
     .forEach((conversation) => {
       const button = document.createElement("article");
-      button.className = `conversation${conversation.id === currentConversation?.id ? " selected" : ""}`;
+      button.className = `conversation${conversation.id === currentConversation?.id ? " selected" : ""}${conversation.unread ? " unread" : ""}`;
       button.setAttribute("role", "button");
       button.setAttribute("tabindex", "0");
+      button.dataset.conversationId = conversation.id;
 
       const avatar = document.createElement("img");
       avatar.src = conversation.avatar;
       avatar.alt = "";
-      avatar.addEventListener("click", (event) => {
-        event.stopPropagation();
-        openFriendProfile(conversation);
-      });
 
       const avatarWrap = document.createElement("span");
       avatarWrap.className = `conversation-avatar-wrap${conversation.status === "Active now" ? " active" : ""}`;
@@ -1718,6 +2338,7 @@ function renderConversations(filter = "") {
         const pinIcon = document.createElement("span");
         pinIcon.className = "pin-icon";
         pinIcon.setAttribute("aria-label", "Pinned");
+        pinIcon.appendChild(createSvgIcon(iconPaths.pin, "pin-icon-svg"));
         name.appendChild(pinIcon);
       }
       if (conversation.muted) {
@@ -1737,16 +2358,6 @@ function renderConversations(filter = "") {
       const time = document.createElement("time");
       time.textContent = conversation.time;
 
-      button.addEventListener("pointerdown", () => {
-        longPressTriggered = false;
-        window.clearTimeout(conversationHoldTimer);
-        conversationHoldTimer = window.setTimeout(() => {
-          longPressTriggered = true;
-          openConversationMenu(button, conversation);
-        }, 520);
-      });
-      button.addEventListener("pointerup", () => window.clearTimeout(conversationHoldTimer));
-      button.addEventListener("pointerleave", () => window.clearTimeout(conversationHoldTimer));
       button.addEventListener("contextmenu", (event) => {
         event.preventDefault();
         openConversationMenu(button, conversation);
@@ -1764,14 +2375,6 @@ function renderConversations(filter = "") {
       }
 
       button.append(avatarWrap, text, meta);
-      button.addEventListener("click", (event) => {
-        if (longPressTriggered) {
-          event.preventDefault();
-          event.stopPropagation();
-          return;
-        }
-        openConversation(conversation.id);
-      });
       button.addEventListener("keydown", (event) => {
         if (event.key !== "Enter" && event.key !== " ") return;
         event.preventDefault();
@@ -1780,6 +2383,96 @@ function renderConversations(filter = "") {
       chatList.appendChild(button);
     });
 }
+
+function conversationFromElement(element) {
+  const row = element?.closest?.(".conversation");
+  if (!row?.dataset?.conversationId) return null;
+  return conversations.find((conversation) => conversation.id === row.dataset.conversationId) || null;
+}
+
+function openConversationFromPress(conversationId) {
+  if (!conversationId) return;
+  const exists = conversations.some((conversation) => conversation.id === conversationId);
+  if (!exists) return;
+  closeConversationMenu();
+  openConversation(conversationId);
+  lastConversationPointerOpenAt = Date.now();
+}
+
+function openConversationProfileFromPress(conversationId) {
+  const conversation = conversations.find((item) => item.id === conversationId);
+  if (!conversation) return;
+  closeConversationMenu();
+  openFriendProfile(conversation);
+  lastConversationPointerOpenAt = Date.now();
+}
+
+chatList.addEventListener("pointerdown", (event) => {
+  if (event.button && event.button !== 0) return;
+  const row = event.target.closest(".conversation");
+  const conversation = conversationFromElement(event.target);
+  if (!row || !conversation) return;
+
+  pendingConversationPress = {
+    id: conversation.id,
+    x: event.clientX,
+    y: event.clientY,
+    anchor: row,
+    profileTarget: !!event.target.closest(".conversation-avatar-wrap")
+  };
+  longPressTriggered = false;
+  window.clearTimeout(conversationHoldTimer);
+  conversationHoldTimer = window.setTimeout(() => {
+    if (!pendingConversationPress || pendingConversationPress.id !== conversation.id) return;
+    longPressTriggered = true;
+    openConversationMenu(row, conversation, pendingConversationPress);
+  }, 520);
+});
+
+document.addEventListener("pointerup", (event) => {
+  if (!pendingConversationPress) return;
+
+  const press = pendingConversationPress;
+  pendingConversationPress = null;
+  window.clearTimeout(conversationHoldTimer);
+
+  const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y);
+  const wasHoldMenuClick = longPressTriggered && Date.now() - menuOpenedAt < 700;
+  longPressTriggered = false;
+  if (wasHoldMenuClick || moved > 10) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  if (press.profileTarget) {
+    openConversationProfileFromPress(press.id);
+  } else {
+    openConversationFromPress(press.id);
+  }
+}, true);
+
+document.addEventListener("pointercancel", () => {
+  pendingConversationPress = null;
+  window.clearTimeout(conversationHoldTimer);
+  longPressTriggered = false;
+}, true);
+
+chatList.addEventListener("click", (event) => {
+  const row = event.target.closest(".conversation");
+  if (row) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (activeConversationMenu && Date.now() - menuOpenedAt < 700) return;
+    if (Date.now() - lastConversationPointerOpenAt > 500) {
+      if (event.target.closest(".conversation-avatar-wrap")) {
+        openConversationProfileFromPress(row.dataset.conversationId);
+      } else {
+        openConversationFromPress(row.dataset.conversationId);
+      }
+    }
+    return;
+  }
+  clearDesktopConversationSelection();
+}, true);
 
 function renderStories() {
   if (!storyRow) return;
@@ -1807,8 +2500,11 @@ function renderStories() {
 const iconPaths = {
   markUnread: "M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v9A2.5 2.5 0 0 1 17.5 17h-11A2.5 2.5 0 0 1 4 14.5v-9Zm2.5-.5a.5.5 0 0 0-.5.5v.63l6 4.05 6-4.05V5.5a.5.5 0 0 0-.5-.5h-11Zm11.5 3.55-5.44 3.67a1 1 0 0 1-1.12 0L6 8.55v5.95a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V8.55Zm1.5-5.05h1a1 1 0 0 1 1 1v1a1 1 0 1 1-2 0v-1a1 1 0 0 1 1-1Z",
   markRead: "M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v9A2.5 2.5 0 0 1 17.5 17h-11A2.5 2.5 0 0 1 4 14.5v-9Zm2.5-.5a.5.5 0 0 0-.5.5v.63l6 4.05 6-4.05V5.5a.5.5 0 0 0-.5-.5h-11Zm11.5 3.55-5.44 3.67a1 1 0 0 1-1.12 0L6 8.55v5.95a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V8.55Z",
-  pin: "M15.83 2.83a2 2 0 0 1 2.83 0l2.5 2.5a2 2 0 0 1 0 2.83l-2.12 2.12 1.06 1.06a1 1 0 0 1-.7 1.7h-5.32l-4.24 4.24v3.54a1 1 0 0 1-1.7.7l-2.83-2.83-2.83-2.83a1 1 0 0 1 .7-1.7h3.54l4.24-4.24V4.6a1 1 0 0 1 1.7-.7l1.06 1.06 2.12-2.13Z",
+  pin: "m22.707 7.583-6.29-6.29a1 1 0 0 0-1.414 0 5.183 5.183 0 0 0-1.543 3.593L8.172 8.79a5.161 5.161 0 0 0-4.768 1.42 1 1 0 0 0 0 1.414l3.779 3.778-5.89 5.89a1 1 0 1 0 1.414 1.414l5.89-5.89 3.778 3.779a1 1 0 0 0 1.414 0 5.174 5.174 0 0 0 1.42-4.769l3.905-5.287a5.183 5.183 0 0 0 3.593-1.543 1 1 0 0 0 0-1.414Zm-3.979.941a.974.974 0 0 0-.908.4l-4.512 6.111a1 1 0 0 0-.14.927 3.037 3.037 0 0 1-.194 2.403l-7.34-7.339a3.042 3.042 0 0 1 2.403-.196.994.994 0 0 0 .927-.138l6.111-4.512a.999.999 0 0 0 .4-.909 3.086 3.086 0 0 1 .342-1.75l4.662 4.662a3.072 3.072 0 0 1-1.75.341Z",
   muted: "M15.209 18.294a1 1 0 0 0-.707-.293H6.184a2.002 2.002 0 0 1-1.74-2.993l.47-.822a8.34 8.34 0 0 0 1.093-4.174c0-.159.005-.316.017-.471a1 1 0 1 0-1.994-.15 8.093 8.093 0 0 0-.023.63 6.341 6.341 0 0 1-.83 3.175l-.47.822a4.001 4.001 0 0 0 3.477 5.983h1.944a4 4 0 0 0 7.827-.382 1 1 0 0 0-.282-.86Zm-3.207 2.708a2 2 0 0 1-1.732-1.001h3.463a2.017 2.017 0 0 1-1.731 1.001Zm11.205.291-2.521-2.521a4.04 4.04 0 0 0 .976-1.629 3.957 3.957 0 0 0-.356-3.123l-.484-.853A6.358 6.358 0 0 1 20 9.997a7.953 7.953 0 0 0-4.745-7.302 3.972 3.972 0 0 0-6.51.002 8.011 8.011 0 0 0-2.438 1.697L2.707.793a1 1 0 0 0-1.414 1.414l20.5 20.5a1 1 0 0 0 1.414-1.414Zm-3.46-4.728a2.042 2.042 0 0 1-.468.8L7.72 5.805a6.004 6.004 0 0 1 2.068-1.377.998.998 0 0 0 .494-.426 1.976 1.976 0 0 1 3.439 0 1 1 0 0 0 .494.425 5.989 5.989 0 0 1 3.786 5.634 8.303 8.303 0 0 0 1.082 4.094l.483.852a1.975 1.975 0 0 1 .181 1.558Z",
+  archive: "M4 3h16a2 2 0 0 1 2 2v3a2 2 0 0 1-1 1.73V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9.73A2 2 0 0 1 2 8V5a2 2 0 0 1 2-2Zm1 7v9h14v-9H5Zm-1-5v3h16V5H4Zm5 7h6a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2Z",
+  block: "M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20Zm0 2a8 8 0 0 0-5.66 13.66L17.66 6.34A7.97 7.97 0 0 0 12 4Zm7.66 3.76L7.76 19.66A8 8 0 0 0 19.66 7.76Z",
+  photo: "M18.44 2.004A3.56 3.56 0 0 1 22 5.564v12.873a3.56 3.56 0 0 1-3.56 3.56H5.568a3.56 3.56 0 0 1-3.56-3.56V5.563a3.56 3.56 0 0 1 3.56-3.56h12.872Zm0 2H5.568a1.56 1.56 0 0 0-1.56 1.56v9.24l3.22-3.22a2 2 0 0 1 2.828 0l1.265 1.265 3.112-3.112a2 2 0 0 1 2.828 0L20 12.476V5.564a1.56 1.56 0 0 0-1.56-1.56ZM7.5 8.75a1.75 1.75 0 1 1 0-3.5 1.75 1.75 0 0 1 0 3.5Z",
   trash: "M9 3h6a1 1 0 0 1 1 1v1h4a1 1 0 1 1 0 2h-1.1l-.82 12.25A3 3 0 0 1 15.08 22H8.92a3 3 0 0 1-2.99-2.75L5.1 7H4a1 1 0 0 1 0-2h4V4a1 1 0 0 1 1-1Zm1 2h4v-.01h-4V5Zm-2.9 2 .82 12.12a1 1 0 0 0 1 .88h6.16a1 1 0 0 0 1-.88L16.9 7H7.1Zm2.9 3a1 1 0 0 1 1 1v6a1 1 0 1 1-2 0v-6a1 1 0 0 1 1-1Zm4 0a1 1 0 0 1 1 1v6a1 1 0 1 1-2 0v-6a1 1 0 0 1 1-1Z"
 };
 
@@ -1856,7 +2552,7 @@ async function setConversationMuted(conversation, muted) {
   }
 }
 
-function openConversationMenu(anchor, conversation) {
+function openConversationMenu(anchor, conversation, position = null) {
   closeConversationMenu();
   menuOpenedAt = Date.now();
 
@@ -1910,10 +2606,7 @@ function openConversationMenu(anchor, conversation) {
     renderConversations(searchInput.value);
   });
 
-  const archiveButton = document.createElement("button");
-  archiveButton.type = "button";
-  archiveButton.textContent = "Archive";
-  archiveButton.addEventListener("click", async () => {
+  const archiveButton = createConversationMenuButton("Archive", iconPaths.archive, async () => {
     const ok = await showConfirmDialog({
       title: "Archive chat?",
       message: conversation.name,
@@ -1924,10 +2617,7 @@ function openConversationMenu(anchor, conversation) {
     afterConversationHidden(conversation);
   });
 
-  const blockButton = document.createElement("button");
-  blockButton.type = "button";
-  blockButton.textContent = "Block";
-  blockButton.addEventListener("click", async () => {
+  const blockButton = createConversationMenuButton("Block", iconPaths.block, async () => {
     const ok = await showConfirmDialog({
       title: "Block user?",
       message: conversation.name,
@@ -1937,7 +2627,7 @@ function openConversationMenu(anchor, conversation) {
     if (!ok) return;
     conversation.blocked = true;
     afterConversationHidden(conversation);
-  });
+  }, { danger: true });
 
   const deleteButton = createConversationMenuButton("Delete", iconPaths.trash, async () => {
     const ok = await showConfirmDialog({
@@ -1947,24 +2637,18 @@ function openConversationMenu(anchor, conversation) {
       danger: true
     });
     if (!ok) return;
-    const index = conversations.findIndex((item) => item.id === conversation.id);
-    if (index >= 0) conversations.splice(index, 1);
-    afterConversationHidden(conversation);
+    await deleteConversationForCurrentUser(conversation);
   }, { danger: true });
 
-  menu.append(readButton, pinButton, muteButton, deleteButton);
+  menu.append(readButton, pinButton, muteButton, archiveButton, blockButton, deleteButton);
   phoneShell.appendChild(menu);
   const shellRect = phoneShell.getBoundingClientRect();
   const anchorRect = anchor.getBoundingClientRect();
   const menuRect = menu.getBoundingClientRect();
-  const left = Math.min(
-    Math.max(anchorRect.right - shellRect.left - menuRect.width - 14, 12),
-    shellRect.width - menuRect.width - 12
-  );
-  const top = Math.min(
-    Math.max(anchorRect.top - shellRect.top + 6, 12),
-    shellRect.height - menuRect.height - 12
-  );
+  const pointX = typeof position?.x === "number" ? position.x - shellRect.left : anchorRect.right - shellRect.left - 14;
+  const pointY = typeof position?.y === "number" ? position.y - shellRect.top : anchorRect.top - shellRect.top + 6;
+  const left = Math.min(Math.max(pointX - menuRect.width / 2, 12), shellRect.width - menuRect.width - 12);
+  const top = Math.min(Math.max(pointY + 10, 12), shellRect.height - menuRect.height - 12);
   menu.style.left = `${left}px`;
   menu.style.top = `${top}px`;
   activeConversationMenu = menu;
@@ -2112,18 +2796,7 @@ async function addOrOpenUserChat(user) {
   }
 
   if (!conversation) {
-    const chatId = chatIdFor(firebaseUser.uid, user.uid || user.id);
-    await setDoc(doc(db, "chats", chatId), {
-      participants: [firebaseUser.uid, user.uid || user.id],
-      createdAt: firestoreServerTimestamp(),
-      updatedAt: firestoreServerTimestamp(),
-      lastMessage: "",
-      lastSenderId: "",
-      hiddenBy: {
-        [firebaseUser.uid]: fieldDelete()
-      }
-    }, { merge: true });
-    conversation = userToConversation(user, chatId);
+    conversation = userToConversation(user);
     conversations.unshift(conversation);
   } else {
     moveConversationToTop(conversation);
@@ -2190,30 +2863,36 @@ function renderUserSearchResult(user) {
 }
 
 async function searchUserByNumber() {
-  const number = userSearchNumber.value.trim();
+  const number = normalizePhoneNumber(userSearchNumber.value);
   userSearchResult.classList.remove("active");
   userSearchResult.innerHTML = "";
   userSearchMessage.textContent = "";
+  setAuthLoading(userSearchButton, true);
 
-  if (!number) {
-    userSearchMessage.textContent = "Number dao";
-    return;
+  try {
+    if (!number) {
+      userSearchMessage.textContent = "Number dao";
+      return;
+    }
+
+    if (currentUser && number === normalizePhoneNumber(currentUser.number)) {
+      userSearchMessage.textContent = "Eta tomar nijer account";
+      return;
+    }
+
+    const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(number)));
+
+    if (!numberSnapshot.exists()) {
+      userSearchMessage.textContent = "Ei number-er user pawa jay nai";
+      return;
+    }
+
+    const user = await loadUserProfile(numberSnapshot.data().uid);
+    renderUserSearchResult(user);
+  } finally {
+    setAuthLoading(userSearchButton, false);
+    updateUserSearchButton();
   }
-
-  if (currentUser && number === currentUser.number) {
-    userSearchMessage.textContent = "Eta tomar nijer account";
-    return;
-  }
-
-  const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(number)));
-
-  if (!numberSnapshot.exists()) {
-    userSearchMessage.textContent = "Ei number-er user pawa jay nai";
-    return;
-  }
-
-  const user = await loadUserProfile(numberSnapshot.data().uid);
-  renderUserSearchResult(user);
 }
 
 function visibleConversations() {
@@ -2228,6 +2907,48 @@ function afterConversationHidden(conversation) {
     if (currentConversation) renderMessages();
   }
   renderConversations(searchInput.value);
+}
+
+async function deleteConversationForCurrentUser(conversation) {
+  if (!conversation || !firebaseUser) return;
+  const previousConversations = [...conversations];
+  const previousCurrent = currentConversation;
+  const index = conversations.findIndex((item) => item.id === conversation.id);
+  if (index >= 0) conversations.splice(index, 1);
+  if (conversation.chatId) {
+    outgoingVisibleChats.delete(conversation.chatId);
+    hideConversationLocally(firebaseUser.uid, conversation.chatId);
+    pendingLocalClears.add(localMessagesKey(firebaseUser.uid, conversation.chatId));
+    clearLocalMessages(firebaseUser.uid, conversation.chatId);
+  }
+  afterConversationHidden(conversation);
+
+  if (!conversation.chatId) return;
+
+  try {
+    await setDoc(doc(db, "chats", conversation.chatId), {
+      hiddenBy: {
+        [firebaseUser.uid]: true
+      },
+      hiddenLastBy: {
+        [firebaseUser.uid]: {
+          text: "",
+          senderId: "",
+          time: ""
+        }
+      },
+      [`unreadBy.${firebaseUser.uid}`]: 0,
+      updatedAt: firestoreServerTimestamp()
+    }, { merge: true });
+    pendingLocalClears.delete(localMessagesKey(firebaseUser.uid, conversation.chatId));
+  } catch (error) {
+    pendingLocalClears.delete(localMessagesKey(firebaseUser.uid, conversation.chatId));
+    conversations.splice(0, conversations.length, ...previousConversations);
+    currentConversation = previousCurrent;
+    renderConversations(searchInput.value);
+    if (currentConversation) renderMessages();
+    window.alert("Chat delete hoy nai. Firebase rules check koro.");
+  }
 }
 
 function openSavedView(type) {
@@ -2400,7 +3121,8 @@ async function openAdminUsers() {
 
   const usersSnapshot = await getDocs(collection(db, "users"));
   usersSnapshot.docs.forEach((userDoc) => {
-    const user = normalizeUserDoc(userDoc.id, userDoc.data());
+    const userData = userDoc.data();
+    const user = normalizeUserDoc(userDoc.id, userData);
     if (user.uid === firebaseUser.uid) return;
 
     const row = document.createElement("article");
@@ -2491,6 +3213,7 @@ async function signalUserDeletion(uid) {
 async function deleteFirebaseUserData(user) {
   if (!user?.uid) return;
   await signalUserDeletion(user.uid);
+  const cleanNumber = normalizePhoneNumber(user.number);
 
   const chatsSnapshot = await getDocs(query(collection(db, "chats"), where("participants", "array-contains", user.uid)));
   await Promise.all(chatsSnapshot.docs.map(async (chatDoc) => {
@@ -2499,7 +3222,31 @@ async function deleteFirebaseUserData(user) {
     await deleteDoc(doc(db, "chats", chatDoc.id));
   }));
 
-  if (user.number) await deleteDoc(doc(db, "numbers", numberDocId(user.number)));
+  const codeSnapshots = await Promise.all([
+    getDocs(query(collection(db, "signupCodes"), where("usedByUid", "==", user.uid))).catch(() => ({ docs: [] })),
+    cleanNumber ? getDocs(query(collection(db, "signupCodes"), where("usedByNumber", "==", cleanNumber))).catch(() => ({ docs: [] })) : { docs: [] }
+  ]);
+  const codeIds = new Set();
+  codeSnapshots.forEach((snapshot) => {
+    snapshot.docs.forEach((codeDoc) => codeIds.add(codeDoc.id));
+  });
+  await Promise.all([...codeIds].map((codeId) => deleteDoc(doc(db, "signupCodes", codeId))));
+
+  const requestSnapshots = await Promise.all([
+    getDocs(query(collection(db, "verificationRequests"), where("uid", "==", user.uid))).catch(() => ({ docs: [] })),
+    cleanNumber ? getDocs(query(collection(db, "verificationRequests"), where("number", "==", cleanNumber))).catch(() => ({ docs: [] })) : { docs: [] }
+  ]);
+  const requestIds = new Set();
+  requestSnapshots.forEach((snapshot) => {
+    snapshot.docs.forEach((requestDoc) => requestIds.add(requestDoc.id));
+  });
+  await Promise.all([...requestIds].map((requestId) => deleteDoc(doc(db, "verificationRequests", requestId))));
+
+  await set(ref(realtimeDb, `activeSessions/${user.uid}`), null).catch(() => {});
+  await set(ref(realtimeDb, `status/${user.uid}`), null).catch(() => {});
+  if (cleanNumber) {
+    await deleteDoc(doc(db, "numbers", numberDocId(cleanNumber)));
+  }
   await deleteDoc(doc(db, "users", user.uid));
 }
 
@@ -2531,7 +3278,80 @@ async function toggleAdminRestriction(user) {
 }
 
 function changeAdminUserPassword(user) {
-  window.alert("For security, Firebase only allows password changes from the signed-in user or a trusted Admin backend. Add a Firebase Cloud Function/Admin SDK endpoint, then this option can update the user's Auth password safely.");
+  if (!isAdminAccount() || !user?.uid) return;
+  if (activeConfirmDialog) activeConfirmDialog.remove();
+  closeConversationMenu();
+  confirmOpenedAt = Date.now();
+
+  const overlay = document.createElement("section");
+  overlay.className = "confirm-overlay active";
+  overlay.setAttribute("aria-hidden", "false");
+
+  const dialog = document.createElement("article");
+  dialog.className = "confirm-dialog password-reset-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Change password";
+
+  const newInput = document.createElement("input");
+  newInput.type = "password";
+  newInput.placeholder = "New password";
+  newInput.autocomplete = "new-password";
+
+  const confirmInput = document.createElement("input");
+  confirmInput.type = "password";
+  confirmInput.placeholder = "Confirm password";
+  confirmInput.autocomplete = "new-password";
+
+  const message = document.createElement("p");
+  message.className = "reset-message";
+
+  const actions = document.createElement("div");
+  actions.className = "confirm-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.textContent = "Cancel";
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.textContent = "Save";
+
+  const close = () => {
+    overlay.remove();
+    activeConfirmDialog = null;
+    confirmOpenedAt = 0;
+  };
+
+  cancelButton.addEventListener("click", close);
+  saveButton.addEventListener("click", async () => {
+    message.textContent = "";
+    saveButton.disabled = true;
+    try {
+      await changeUserPasswordAsAdmin(user, newInput.value, confirmInput.value);
+      close();
+      window.alert("Password changed");
+      if (activeFriendProfile) openFriendProfile(activeFriendProfile);
+      renderConversations(searchInput.value);
+      renderProfileFriends();
+    } catch (error) {
+      message.textContent = error.message || "Password change hoy nai";
+      saveButton.disabled = false;
+    }
+  });
+
+  actions.append(cancelButton, saveButton);
+  dialog.append(
+    heading,
+    createResetField("New password", createPasswordField(newInput)),
+    createResetField("Confirm password", createPasswordField(confirmInput)),
+    message,
+    actions
+  );
+  overlay.appendChild(dialog);
+  phoneShell.appendChild(overlay);
+  activeConfirmDialog = overlay;
+  newInput.focus();
 }
 
 function openAdminUserMenu(anchor, user) {
@@ -2595,6 +3415,8 @@ function renderMessages() {
   muteChatButton.textContent = currentConversation.muted ? "Unmute" : "Mute";
   chatAvatar.src = currentConversation.avatar;
   chatAvatar.alt = currentConversation.name;
+  chatAvatarWrap.classList.toggle("active", currentConversation.status === "Active now");
+  chatAvatarWrap.classList.remove("offline");
 
   if (currentConversation.chatId && !currentConversation.messagesLoaded) {
     messages.innerHTML = `<div class="messages-state">Loading chat...</div>`;
@@ -2603,6 +3425,7 @@ function renderMessages() {
 
   messages.innerHTML = `<div class="time-divider">Today</div>`;
   const lastOwnMessage = [...currentConversation.messages].reverse().find((message) => message.from === "me");
+  applySeenState(currentConversation);
   const lastSeenOwnMessage = [...currentConversation.messages].reverse().find((message) => {
     return message.from === "me" && message.status === "seen";
   });
@@ -2615,18 +3438,44 @@ function renderMessages() {
       avatar.className = "message-avatar";
       avatar.src = currentConversation.avatar;
       avatar.alt = "";
+      avatar.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openFriendProfile(currentConversation);
+      });
       row.appendChild(avatar);
     }
     const bubble = document.createElement("p");
     bubble.className = "message";
     if (message.type === "photo" && message.url) {
       bubble.classList.add("photo-message");
-      const image = document.createElement("img");
-      image.src = message.url;
-      image.alt = message.fileName || "Photo";
-      bubble.appendChild(image);
+      const icon = document.createElement("span");
+      icon.className = "photo-file-icon";
+      icon.appendChild(createSvgIcon(iconPaths.photo, "photo-file-svg"));
+      const details = document.createElement("span");
+      details.className = "photo-file-details";
+      const title = document.createElement("strong");
+      title.textContent = "Photo";
+      const fileName = document.createElement("small");
+      fileName.textContent = message.fileName || "Tap to view";
+      details.append(title, fileName);
+      bubble.append(icon, details);
+    } else if (message.type === "voice" && message.url) {
+      bubble.classList.add("voice-message");
+      const label = document.createElement("span");
+      label.className = "voice-label";
+      label.textContent = "Voice";
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.src = message.url;
+      bubble.append(label, audio);
     } else {
       bubble.textContent = message.text;
+    }
+    if (message.reaction === "heart") {
+      const reaction = document.createElement("span");
+      reaction.className = "message-reaction";
+      reaction.textContent = "\u2764\ufe0f";
+      bubble.appendChild(reaction);
     }
     bubble.addEventListener("click", () => {
       if (longPressTriggered) {
@@ -2634,7 +3483,23 @@ function renderMessages() {
         return;
       }
       closeMessageActions();
+      if (message.type === "voice") return;
+      if (message.type === "photo" && message.url) {
+        openPhotoViewer(message);
+        return;
+      }
       row.classList.toggle("show-time");
+    });
+    bubble.addEventListener("dblclick", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const nextReaction = message.reaction === "heart" ? "" : "heart";
+      setLocalMessageReaction(currentConversation, message, nextReaction);
+      if (currentConversation?.chatId) {
+        writeLocalMessages(firebaseUser.uid, currentConversation.chatId, currentConversation.messages);
+      }
+      renderMessages();
+      syncMessageReaction(currentConversation, message, nextReaction);
     });
     bubble.addEventListener("pointerdown", () => startLongPress(row, message));
     bubble.addEventListener("pointerup", cancelLongPress);
@@ -2657,6 +3522,43 @@ function renderMessages() {
   });
 
   messages.scrollTop = messages.scrollHeight;
+}
+
+function openPhotoViewer(message) {
+  document.querySelector(".photo-viewer-overlay")?.remove();
+
+  const overlay = document.createElement("section");
+  overlay.className = "photo-viewer-overlay active";
+  overlay.setAttribute("aria-hidden", "false");
+
+  const panel = document.createElement("article");
+  panel.className = "photo-viewer";
+
+  const image = document.createElement("img");
+  image.src = message.url;
+  image.alt = message.fileName || "Photo";
+
+  const actions = document.createElement("div");
+  actions.className = "photo-viewer-actions";
+
+  const saveLink = document.createElement("a");
+  saveLink.href = message.url;
+  saveLink.download = message.fileName || `webchat-photo-${Date.now()}.jpg`;
+  saveLink.textContent = "Save";
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.textContent = "Close";
+
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", close);
+  panel.addEventListener("click", (event) => event.stopPropagation());
+  closeButton.addEventListener("click", close);
+
+  actions.append(saveLink, closeButton);
+  panel.append(image, actions);
+  overlay.appendChild(panel);
+  phoneShell.appendChild(overlay);
 }
 
 function createMessageStatus(message) {
@@ -2708,6 +3610,7 @@ function openConversation(id, allowSeen = true) {
     homeScreen.classList.remove("active");
   }
   chatScreen.classList.add("active");
+  updateChatEmptyState();
   subscribeToMessages(currentConversation);
   subscribeToPresence(currentConversation);
   renderMessages();
@@ -2717,6 +3620,30 @@ function openConversation(id, allowSeen = true) {
   }
 }
 
+function clearDesktopConversationSelection() {
+  if (!desktopQuery.matches || !currentConversation) return;
+  if (unsubscribeMessages) unsubscribeMessages();
+  if (unsubscribePresence) unsubscribePresence();
+  window.clearTimeout(presenceRefreshTimer);
+  unsubscribeMessages = null;
+  unsubscribePresence = null;
+  activeMessageChatId = null;
+  activePresenceUserId = null;
+  seenAllowedChatId = null;
+  presenceRefreshTimer = null;
+  currentConversation = null;
+  messages.innerHTML = "";
+  chatName.textContent = "";
+  chatStatus.textContent = "";
+  chatAvatar.removeAttribute("src");
+  chatAvatar.alt = "";
+  chatAvatarWrap.classList.remove("active", "offline");
+  updateChatEmptyState();
+  saveUiState({ view: "home" });
+  renderConversations(searchInput.value);
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+}
+
 function closeConversation(fromHistory = false) {
   if (desktopQuery.matches) return;
   if (!fromHistory && chatHistoryActive) {
@@ -2724,13 +3651,20 @@ function closeConversation(fromHistory = false) {
     return;
   }
   if (unsubscribeMessages) unsubscribeMessages();
+  if (unsubscribePresence) unsubscribePresence();
+  window.clearTimeout(presenceRefreshTimer);
   unsubscribeMessages = null;
+  unsubscribePresence = null;
   activeMessageChatId = null;
+  activePresenceUserId = null;
   seenAllowedChatId = null;
+  presenceRefreshTimer = null;
   chatHistoryActive = false;
   phoneShell.classList.remove("chat-open");
   chatScreen.classList.remove("active");
   homeScreen.classList.add("active");
+  currentConversation = null;
+  updateChatEmptyState();
   saveUiState({ view: "home" });
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }
@@ -2740,7 +3674,7 @@ function getFriendProfile(conversation) {
     name: conversation.name,
     status: conversation.status,
     avatar: conversation.avatar,
-    bio: conversation.bio || latestMessage(conversation),
+    bio: conversation.bio || "",
     username: conversation.username || `@${conversation.id}.webchat`,
     number: conversation.number || "+880 1700-000000",
     verified: !!conversation.verified,
@@ -2760,6 +3694,9 @@ function openProfile(profile = myProfile) {
   document.querySelector("#profileNumber").textContent = profile.number;
   profilePhotoButton.classList.toggle("hidden", !profile.editable);
   profileNameButton.classList.toggle("hidden", !profile.editable);
+  profileEditButton.classList.toggle("hidden", !profile.editable);
+  profilePanel.classList.remove("details-editing");
+  profileEditButton.textContent = "Edit";
   renderProfileFriends();
   profileOverlay.classList.add("active");
   profileOverlay.setAttribute("aria-hidden", "false");
@@ -2852,11 +3789,62 @@ function openFriendProfile(conversation) {
   friendProfileUsername.textContent = profile.username;
   friendProfileNumber.textContent = profile.number;
   friendProfileVerifyButton.hidden = !isAdminAccount();
+  friendProfilePasswordButton.hidden = !isAdminAccount();
   friendProfileDeleteButton.hidden = !isAdminAccount();
   friendProfileVerifyButton.textContent = profile.verified ? "Remove verify badge" : "Give verify badge";
   friendProfileOverlay.classList.add("active");
   friendProfileOverlay.setAttribute("aria-hidden", "false");
   friendProfileCloseButton.focus();
+}
+
+async function copyFriendProfileNumber() {
+  const number = friendProfileNumber.textContent.trim();
+  if (!number) return;
+  const copied = await copyText(number);
+  const previous = friendProfileNumber.textContent;
+  friendProfileNumber.textContent = copied ? "Copied" : "Copy failed";
+  window.setTimeout(() => {
+    friendProfileNumber.textContent = previous;
+  }, 1100);
+}
+
+async function reportActiveFriend() {
+  if (!activeFriendProfile || !firebaseUser) return;
+  const ok = await showConfirmDialog({
+    title: "Report user?",
+    message: activeFriendProfile.name,
+    confirmText: "Report",
+    danger: true
+  });
+  if (!ok) return;
+  try {
+    await addDoc(collection(db, "reports"), {
+      reporterId: firebaseUser.uid,
+      reportedUserId: activeFriendProfile.userId,
+      reportedNumber: activeFriendProfile.number || "",
+      reportedName: activeFriendProfile.name || "",
+      chatId: activeFriendProfile.chatId || "",
+      createdAt: firestoreServerTimestamp()
+    });
+    window.alert("Report sent");
+  } catch (error) {
+    window.alert("Report send hoy nai. Firebase rules check koro.");
+  }
+}
+
+async function blockActiveFriend() {
+  if (!activeFriendProfile) return;
+  const conversation = activeFriendProfile;
+  const ok = await showConfirmDialog({
+    title: "Block user?",
+    message: conversation.name,
+    confirmText: "Block",
+    danger: true
+  });
+  if (!ok) return;
+  conversation.blocked = true;
+  closeFriendProfile();
+  afterConversationHidden(conversation);
 }
 
 function closeFriendProfile() {
@@ -2917,6 +3905,7 @@ async function deleteActiveFriendProfile() {
 
   const conversation = activeFriendProfile;
   const deletedUid = conversation.userId;
+  setAuthLoading(friendProfileDeleteButton, true);
 
   try {
     await deleteFirebaseUserData({
@@ -2927,6 +3916,7 @@ async function deleteActiveFriendProfile() {
       }
     });
   } catch (error) {
+    setAuthLoading(friendProfileDeleteButton, false);
     window.alert("User delete hoy nai. Firebase rules check koro.");
     return;
   }
@@ -2937,30 +3927,22 @@ async function deleteActiveFriendProfile() {
   closeFriendProfile();
   closeAllFriends();
   closeProfile();
-  if (currentConversation?.id === conversation.id) {
-    currentConversation = conversations[0] || null;
-    if (currentConversation && desktopQuery.matches) {
-      openConversation(currentConversation.id, false);
-    } else {
-      messages.innerHTML = "";
-    }
+  if (currentConversation?.id === conversation.id || currentConversation?.userId === deletedUid) {
+    currentConversation = null;
+    messages.innerHTML = "";
+    chatName.textContent = "";
+    chatStatus.textContent = "";
+    chatAvatar.removeAttribute("src");
+    chatAvatar.alt = "";
+    chatAvatarWrap.classList.remove("active", "offline");
+    updateChatEmptyState();
   }
   renderConversations(searchInput.value);
 }
 
 async function messageActiveFriendProfile() {
   if (!activeFriendProfile) return;
-  if (!activeFriendProfile.chatId && firebaseUser && activeFriendProfile.userId) {
-    const chatId = chatIdFor(firebaseUser.uid, activeFriendProfile.userId);
-    await setDoc(doc(db, "chats", chatId), {
-      participants: [firebaseUser.uid, activeFriendProfile.userId],
-      createdAt: firestoreServerTimestamp(),
-      updatedAt: firestoreServerTimestamp(),
-      lastMessage: "",
-      lastSenderId: ""
-    }, { merge: true });
-    activeFriendProfile.chatId = chatId;
-    activeFriendProfile.id = chatId;
+  if (!findConversationByUser({ uid: activeFriendProfile.userId, number: activeFriendProfile.number })) {
     conversations.unshift(activeFriendProfile);
   }
   closeFriendProfile();
@@ -3054,13 +4036,90 @@ async function clearChat() {
   }
 }
 
+function prepareOutgoingConversation(conversation) {
+  const hadChat = !!conversation?.chatId;
+  if (!conversation?.chatId && firebaseUser && conversation?.userId) {
+    const chatId = chatIdFor(firebaseUser.uid, conversation.userId);
+    conversation.chatId = chatId;
+    conversation.id = chatId;
+    saveUiState({
+      view: "chat",
+      conversationId: conversation.id,
+      chatId: conversation.chatId,
+      userId: conversation.userId,
+      number: conversation.number
+    });
+  }
+  conversation.pendingRemoteChat = true;
+  return { chatId: conversation?.chatId, hadChat };
+}
+
+async function saveOutgoingRemoteMessage(conversation, messageData, lastMessage, hadChat) {
+  if (!conversation?.chatId) throw new Error("Chat ready hoy nai");
+  const chatRef = doc(db, "chats", conversation.chatId);
+  showConversationLocally(firebaseUser.uid, conversation.chatId);
+  keepOutgoingConversationVisible(conversation);
+  const remoteMessageData = {
+    ...messageData,
+    encrypted: true,
+    text: messageData.type === "photo" ? "Photo" : "Message",
+    textCipher: await encryptChatValue(conversation.chatId, messageData.text || ""),
+    url: "",
+    fileName: "",
+    localCreatedAtMs: messageData.localCreatedAtMs || Date.now()
+  };
+  if (messageData.url) remoteMessageData.urlCipher = await encryptChatValue(conversation.chatId, messageData.url);
+  if (messageData.fileName) remoteMessageData.fileNameCipher = await encryptChatValue(conversation.chatId, messageData.fileName);
+  const chatUpdate = {
+    participants: [firebaseUser.uid, conversation.userId],
+    lastMessage: lastMessage === "Photo" || lastMessage === "Voice" ? lastMessage : "Message",
+    encryptedLast: true,
+    lastSenderId: firebaseUser.uid,
+    lastTime: "Now",
+    [`unreadBy.${conversation.userId}`]: fieldIncrement(1),
+    [`unreadBy.${firebaseUser.uid}`]: 0,
+    updatedAt: firestoreServerTimestamp()
+  };
+  const visibilityUpdate = {
+    [`hiddenBy.${firebaseUser.uid}`]: fieldDelete(),
+    [`hiddenBy.${conversation.userId}`]: fieldDelete(),
+    [`hiddenLastBy.${firebaseUser.uid}`]: fieldDelete(),
+    [`hiddenLastBy.${conversation.userId}`]: fieldDelete()
+  };
+
+  if (!hadChat) {
+    const messageRef = collection(db, "chats", conversation.chatId, "messages").doc();
+    const batch = db.batch();
+    batch.set(messageRef, remoteMessageData);
+    batch.set(chatRef, {
+      ...chatUpdate,
+      createdAt: firestoreServerTimestamp()
+    }, { merge: true });
+    await batch.commit();
+    await updateDoc(chatRef, visibilityUpdate).catch(() => {});
+    conversation.pendingRemoteChat = false;
+    keepOutgoingConversationVisible(conversation, 25000);
+    return messageRef.id;
+  }
+
+  const messageRef = await addDoc(collection(db, "chats", conversation.chatId, "messages"), remoteMessageData);
+  await updateDoc(chatRef, {
+    ...chatUpdate,
+    ...visibilityUpdate
+  });
+  conversation.pendingRemoteChat = false;
+  keepOutgoingConversationVisible(conversation, 25000);
+  return messageRef.id;
+}
+
 async function sendMessage(text) {
   const conversation = currentConversation;
-  if (!firebaseUser || !conversation?.chatId || !conversation.userId) return;
+  if (!firebaseUser || !conversation?.userId) return;
   if (!canMessageConversation(conversation)) {
     window.alert(restrictedMessage(conversation));
     return;
   }
+  const { hadChat } = prepareOutgoingConversation(conversation);
 
   const message = {
     id: `${conversation.id}-${Date.now()}`,
@@ -3070,7 +4129,8 @@ async function sendMessage(text) {
     time: currentClockTime(),
     date: "Today",
     status: "sent",
-    createdAtMs: Date.now()
+    createdAtMs: Date.now(),
+    localOrder: Date.now()
   };
 
   conversation.messages.push(message);
@@ -3078,33 +4138,27 @@ async function sendMessage(text) {
   conversation.lastMessage = text;
   conversation.lastSenderId = firebaseUser.uid;
   conversation.time = "Now";
+  keepOutgoingConversationVisible(conversation);
   moveConversationToTop(currentConversation);
   renderMessages();
   renderConversations(searchInput.value);
 
   try {
-    const messageRef = await addDoc(collection(db, "chats", conversation.chatId, "messages"), {
+    const messageId = await saveOutgoingRemoteMessage(conversation, {
       text,
       senderId: firebaseUser.uid,
       receiverId: conversation.userId,
       status: "delivered",
       time: message.time,
       date: "Today",
+      localCreatedAtMs: message.createdAtMs,
       createdAt: firestoreServerTimestamp()
-    });
-    message.id = messageRef.id;
+    }, text, hadChat);
+    message.id = messageId;
     writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
-
-    await updateDoc(doc(db, "chats", conversation.chatId), {
-      lastMessage: text,
-      lastSenderId: firebaseUser.uid,
-      lastTime: "Now",
-      [`unreadBy.${conversation.userId}`]: fieldIncrement(1),
-      [`unreadBy.${firebaseUser.uid}`]: 0,
-      [`hiddenLastBy.${firebaseUser.uid}`]: fieldDelete(),
-      updatedAt: firestoreServerTimestamp()
-    });
+    subscribeToMessages(conversation);
   } catch (error) {
+    conversation.pendingRemoteChat = false;
     window.alert("Message send hoy nai. Firebase rules check koro.");
   }
 }
@@ -3132,14 +4186,14 @@ function closeEmojiMenu() {
 }
 
 function updateComposerMode() {
-  messageForm.classList.toggle("has-text", messageInput.value.trim().length > 0);
+  messageForm.classList.toggle("has-text", messageInput.value.trim().length > 0 || !!pendingVoiceBlob || !!pendingPhotoFile || voiceRecorder?.state === "recording");
 }
 
 function sendAttachment(input, label) {
   const file = input.files[0];
   if (!file) return;
   if (label === "Photo" && file.type.startsWith("image/")) {
-    sendPhotoAttachment(input, file);
+    preparePhotoDraft(input, file);
     return;
   }
   const conversation = currentConversation;
@@ -3171,15 +4225,119 @@ function sendAttachment(input, label) {
   }, 1200);
 }
 
-function sendPhotoAttachment(input, file) {
-  const conversation = currentConversation;
-  if (!firebaseUser || !conversation?.chatId || !conversation.userId) {
+function loadImageFromDataUrl(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = reject;
+    image.src = dataUrl;
+  });
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+async function compressPhotoFile(file) {
+  const originalUrl = await readFileAsDataUrl(file);
+  const image = await loadImageFromDataUrl(originalUrl);
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d");
+  const maxChars = 680 * 1024;
+  const maxSizes = [1400, 1100, 900, 720, 560, 420];
+  const qualities = [0.82, 0.72, 0.62, 0.52, 0.42, 0.34];
+  let bestUrl = originalUrl;
+
+  for (const maxSize of maxSizes) {
+    const ratio = Math.min(1, maxSize / Math.max(image.naturalWidth || image.width, image.naturalHeight || image.height));
+    canvas.width = Math.max(1, Math.round((image.naturalWidth || image.width) * ratio));
+    canvas.height = Math.max(1, Math.round((image.naturalHeight || image.height) * ratio));
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    for (const quality of qualities) {
+      const url = canvas.toDataURL("image/jpeg", quality);
+      bestUrl = url;
+      if (url.length <= maxChars) return url;
+    }
+  }
+
+  return bestUrl;
+}
+
+function removePhotoDraftPanel() {
+  document.querySelector(".photo-draft")?.remove();
+  if (!pendingVoiceBlob && voiceRecorder?.state !== "recording") {
+    messageForm.classList.remove("voice-mode");
+  }
+}
+
+function clearPhotoDraft() {
+  if (pendingPhotoUrl) URL.revokeObjectURL(pendingPhotoUrl);
+  pendingPhotoFile = null;
+  pendingPhotoUrl = "";
+  photoInput.value = "";
+  removePhotoDraftPanel();
+  updateComposerMode();
+}
+
+function showPhotoDraft() {
+  removePhotoDraftPanel();
+  if (!pendingPhotoFile) return;
+  messageForm.classList.add("voice-mode");
+  const panel = document.createElement("div");
+  panel.className = "photo-draft voice-draft";
+
+  const preview = document.createElement("img");
+  preview.src = pendingPhotoUrl;
+  preview.alt = "";
+
+  const label = document.createElement("span");
+  label.className = "voice-draft-status";
+  label.textContent = pendingPhotoFile.name || "Photo ready";
+
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "voice-delete";
+  deleteButton.setAttribute("aria-label", "Delete photo");
+  deleteButton.appendChild(createSvgIcon(iconPaths.trash, "voice-delete-icon"));
+  deleteButton.addEventListener("click", clearPhotoDraft);
+
+  panel.append(preview, label, deleteButton);
+  messageInputWrap.appendChild(panel);
+  updateComposerMode();
+}
+
+function preparePhotoDraft(input, file) {
+  if (!firebaseUser || !currentConversation?.userId) {
     input.value = "";
     return;
   }
-  const reader = new FileReader();
-  reader.addEventListener("load", async () => {
-    const url = reader.result;
+  clearVoiceDraft();
+  clearPhotoDraft();
+  pendingPhotoFile = file;
+  pendingPhotoUrl = URL.createObjectURL(file);
+  input.value = "";
+  closeAttachmentMenu();
+  closeEmojiMenu();
+  showPhotoDraft();
+}
+
+async function sendPhotoAttachment(file = pendingPhotoFile) {
+  const conversation = currentConversation;
+  if (!firebaseUser || !conversation?.userId) {
+    clearPhotoDraft();
+    return;
+  }
+  if (!file) return;
+  try {
+    const { hadChat } = prepareOutgoingConversation(conversation);
+    const url = await compressPhotoFile(file);
     const message = {
       id: `${conversation.id}-${Date.now()}-photo`,
       from: "me",
@@ -3191,7 +4349,8 @@ function sendPhotoAttachment(input, file) {
       time: currentClockTime(),
       date: "Today",
       status: "sent",
-      createdAtMs: Date.now()
+      createdAtMs: Date.now(),
+      localOrder: Date.now()
     };
 
     conversation.messages.push(message);
@@ -3199,13 +4358,14 @@ function sendPhotoAttachment(input, file) {
     conversation.lastMessage = "Photo";
     conversation.lastSenderId = firebaseUser.uid;
     conversation.time = "Now";
+    keepOutgoingConversationVisible(conversation);
     moveConversationToTop(conversation);
-    input.value = "";
+    clearPhotoDraft();
     renderMessages();
     renderConversations(searchInput.value);
 
     try {
-      const messageRef = await addDoc(collection(db, "chats", conversation.chatId, "messages"), {
+      const messageId = await saveOutgoingRemoteMessage(conversation, {
         text: "Photo",
         type: "photo",
         url,
@@ -3215,24 +4375,207 @@ function sendPhotoAttachment(input, file) {
         status: "delivered",
         time: message.time,
         date: "Today",
+        localCreatedAtMs: message.createdAtMs,
         createdAt: firestoreServerTimestamp()
-      });
-      message.id = messageRef.id;
+      }, "Photo", hadChat);
+      message.id = messageId;
       writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
-      await updateDoc(doc(db, "chats", conversation.chatId), {
-        lastMessage: "Photo",
-        lastSenderId: firebaseUser.uid,
-        lastTime: "Now",
-        [`unreadBy.${conversation.userId}`]: fieldIncrement(1),
-        [`unreadBy.${firebaseUser.uid}`]: 0,
-        [`hiddenLastBy.${firebaseUser.uid}`]: fieldDelete(),
-        updatedAt: firestoreServerTimestamp()
-      });
+      subscribeToMessages(conversation);
     } catch (error) {
-      window.alert("Photo send hoy nai. Firebase rules/storage size check koro.");
+      conversation.pendingRemoteChat = false;
+      conversation.messages = conversation.messages.filter((item) => item.id !== message.id);
+      renderMessages();
+      renderConversations(searchInput.value);
+      window.alert("Photo send hoy nai. Image aro chhoto kore abar try koro.");
     }
-  });
-  reader.readAsDataURL(file);
+  } catch (error) {
+    clearPhotoDraft();
+    window.alert("Photo read kora jay nai. Abar try koro.");
+  }
+}
+
+function formatVoiceDuration(ms) {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+function removeVoiceDraftPanel() {
+  document.querySelector(".voice-draft")?.remove();
+  messageForm.classList.remove("voice-mode", "voice-recording", "voice-ready");
+  messageInput.readOnly = false;
+}
+
+function stopVoiceStream() {
+  voiceStream?.getTracks?.().forEach((track) => track.stop());
+  voiceStream = null;
+}
+
+function clearVoiceDraft() {
+  const wasRecording = voiceRecorder?.state === "recording";
+  if (wasRecording) {
+    voiceDiscarding = true;
+    voiceRecorder.stop();
+  }
+  window.clearInterval(voiceTimer);
+  voiceTimer = null;
+  voiceChunks = [];
+  if (!wasRecording) voiceRecorder = null;
+  voiceStartedAt = 0;
+  stopVoiceStream();
+  if (pendingVoiceUrl) URL.revokeObjectURL(pendingVoiceUrl);
+  pendingVoiceBlob = null;
+  pendingVoiceUrl = "";
+  voiceButton.classList.remove("recording");
+  removeVoiceDraftPanel();
+  updateComposerMode();
+}
+
+function showVoiceDraft(recording = false) {
+  removeVoiceDraftPanel();
+  const panel = document.createElement("div");
+  panel.className = `voice-draft${recording ? " recording" : ""}`;
+  messageForm.classList.add("voice-mode", recording ? "voice-recording" : "voice-ready");
+  messageInput.readOnly = true;
+
+  const status = document.createElement("span");
+  status.className = "voice-draft-status";
+  status.textContent = recording ? `Recording ${formatVoiceDuration(Date.now() - voiceStartedAt)}` : "Voice ready";
+  panel.appendChild(status);
+
+  const deleteButton = document.createElement("button");
+  deleteButton.type = "button";
+  deleteButton.className = "voice-delete";
+  deleteButton.setAttribute("aria-label", "Delete voice");
+  deleteButton.appendChild(createSvgIcon(iconPaths.trash, "voice-delete-icon"));
+  deleteButton.addEventListener("click", clearVoiceDraft);
+
+  if (!recording) {
+    const audio = document.createElement("audio");
+    audio.controls = true;
+    audio.src = pendingVoiceUrl;
+    panel.appendChild(audio);
+  }
+  panel.appendChild(deleteButton);
+
+  messageInputWrap.appendChild(panel);
+  updateComposerMode();
+}
+
+function stopVoiceRecording() {
+  if (voiceRecorder?.state === "recording") {
+    voiceRecorder.stop();
+  }
+}
+
+async function startVoiceRecording() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    window.alert("Ei browser-e voice recording support kore na.");
+    return;
+  }
+  if (!firebaseUser || !currentConversation?.userId) {
+    window.alert("Age ekta chat open koro.");
+    return;
+  }
+  if (voiceRecorder?.state === "recording") {
+    stopVoiceRecording();
+    return;
+  }
+  clearVoiceDraft();
+  try {
+    voiceDiscarding = false;
+    voiceMimeType = "audio/webm";
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const options = MediaRecorder.isTypeSupported?.("audio/webm;codecs=opus")
+      ? { mimeType: "audio/webm;codecs=opus" }
+      : {};
+    voiceRecorder = new MediaRecorder(voiceStream, options);
+    voiceMimeType = voiceRecorder.mimeType || "audio/webm";
+    voiceChunks = [];
+    voiceRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data?.size) voiceChunks.push(event.data);
+    });
+    voiceRecorder.addEventListener("stop", () => {
+      window.clearInterval(voiceTimer);
+      voiceTimer = null;
+      stopVoiceStream();
+      voiceButton.classList.remove("recording");
+      if (voiceDiscarding) {
+        voiceDiscarding = false;
+        voiceChunks = [];
+        voiceRecorder = null;
+        removeVoiceDraftPanel();
+        updateComposerMode();
+        return;
+      }
+      pendingVoiceBlob = new Blob(voiceChunks, { type: voiceMimeType || "audio/webm" });
+      pendingVoiceUrl = URL.createObjectURL(pendingVoiceBlob);
+      voiceRecorder = null;
+      showVoiceDraft(false);
+    });
+    voiceStartedAt = Date.now();
+    voiceRecorder.start();
+    voiceButton.classList.add("recording");
+    showVoiceDraft(true);
+    voiceTimer = window.setInterval(() => showVoiceDraft(true), 1000);
+  } catch (error) {
+    clearVoiceDraft();
+    window.alert("Microphone permission dao, tarpor abar try koro.");
+  }
+}
+
+async function sendVoiceMessage() {
+  const conversation = currentConversation;
+  if (!pendingVoiceBlob || !firebaseUser || !conversation?.userId) return;
+  try {
+    const { hadChat } = prepareOutgoingConversation(conversation);
+    const url = await readFileAsDataUrl(pendingVoiceBlob);
+    const duration = formatVoiceDuration(Date.now() - voiceStartedAt);
+    const message = {
+      id: `${conversation.id}-${Date.now()}-voice`,
+      from: "me",
+      senderId: firebaseUser.uid,
+      text: "Voice",
+      type: "voice",
+      url,
+      fileName: `Voice ${duration}`,
+      time: currentClockTime(),
+      date: "Today",
+      status: "sent",
+      createdAtMs: Date.now(),
+      localOrder: Date.now()
+    };
+
+    conversation.messages.push(message);
+    conversation.messagesLoaded = true;
+    conversation.lastMessage = "Voice";
+    conversation.lastSenderId = firebaseUser.uid;
+    conversation.time = "Now";
+    keepOutgoingConversationVisible(conversation);
+    moveConversationToTop(conversation);
+    renderMessages();
+    renderConversations(searchInput.value);
+
+    const messageId = await saveOutgoingRemoteMessage(conversation, {
+      text: "Voice",
+      type: "voice",
+      url,
+      fileName: message.fileName,
+      senderId: firebaseUser.uid,
+      receiverId: conversation.userId,
+      status: "delivered",
+      time: message.time,
+      date: "Today",
+      localCreatedAtMs: message.createdAtMs,
+      createdAt: firestoreServerTimestamp()
+    }, "Voice", hadChat);
+    message.id = messageId;
+    writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+    clearVoiceDraft();
+    subscribeToMessages(conversation);
+  } catch (error) {
+    window.alert("Voice send hoy nai. Abar try koro.");
+  }
 }
 
 function startLongPress(row, message) {
@@ -3265,6 +4608,11 @@ function openMessageActions(row, message) {
   removeButton.addEventListener("click", () => removeMessage(message));
 
   if (message.from === "me") {
+    if (message.type && message.type !== "text") {
+      menu.appendChild(removeButton);
+      row.appendChild(menu);
+      return;
+    }
     const editButton = document.createElement("button");
     editButton.type = "button";
     editButton.textContent = "Edit";
@@ -3302,14 +4650,18 @@ function editMessage(row, message) {
       }
       if (currentConversation?.chatId && message.from === "me") {
         try {
+          const textCipher = await encryptChatValue(currentConversation.chatId, trimmed);
           await updateDoc(doc(db, "chats", currentConversation.chatId, "messages", message.id), {
-            text: trimmed
+            encrypted: true,
+            text: "Message",
+            textCipher
           });
           if (wasLatest) {
             currentConversation.lastMessage = trimmed;
             currentConversation.lastSenderId = firebaseUser.uid;
             await updateDoc(doc(db, "chats", currentConversation.chatId), {
-              lastMessage: trimmed,
+              lastMessage: "Message",
+              encryptedLast: true,
               lastSenderId: firebaseUser.uid,
               lastTime: "Now",
               updatedAt: firestoreServerTimestamp()
@@ -3447,82 +4799,15 @@ function editProfileField(button) {
   });
 }
 
-function editPassword(button) {
-  if (!currentUser || button.classList.contains("editing")) return;
-  const valueNode = button.querySelector("strong");
-  const fields = document.createElement("span");
-  fields.className = "password-edit-fields";
+function toggleProfileDetailsEdit() {
+  if (!activeProfile?.editable) return;
+  const editing = !profilePanel.classList.contains("details-editing");
+  profilePanel.classList.toggle("details-editing", editing);
+  profileEditButton.textContent = editing ? "Done" : "Edit";
+}
 
-  const currentInput = document.createElement("input");
-  currentInput.type = "password";
-  currentInput.placeholder = "Current password";
-  currentInput.setAttribute("aria-label", "Current password");
-
-  const newInput = document.createElement("input");
-  newInput.type = "password";
-  newInput.placeholder = "New password";
-  newInput.setAttribute("aria-label", "New password");
-
-  const saveButton = document.createElement("button");
-  saveButton.className = "password-save-button";
-  saveButton.type = "button";
-  saveButton.textContent = "Save";
-
-  fields.append(createPasswordField(currentInput), createPasswordField(newInput), saveButton);
-  button.classList.add("editing");
-  valueNode.replaceWith(fields);
-  currentInput.focus();
-
-  const closeEditor = () => {
-    const strong = document.createElement("strong");
-    strong.textContent = "Change";
-    fields.replaceWith(strong);
-    button.classList.remove("editing");
-  };
-
-  const save = async () => {
-    if (!newInput.value.trim()) {
-      window.alert("New password dao");
-      newInput.focus();
-      return;
-    }
-
-    try {
-      if (firebaseUser) {
-        await reauthenticateWithPassword(firebaseUser, authPassword(currentInput.value));
-        await updatePassword(firebaseUser, authPassword(newInput.value));
-      } else if (currentInput.value !== currentUser.password) {
-        window.alert("Current password thik na");
-        currentInput.focus();
-        return;
-      }
-
-      const users = readUsers();
-      const user = users.find((item) => item.id === currentUser?.id);
-      if (user) {
-        user.password = newInput.value;
-        currentUser = user;
-        writeUsers(users);
-      }
-      closeEditor();
-      window.alert("Password changed");
-    } catch (error) {
-      window.alert("Current password thik na ba abar login kore try koro");
-      currentInput.focus();
-    }
-  };
-
-  saveButton.addEventListener("click", save);
-  fields.addEventListener("click", (event) => event.stopPropagation());
-  fields.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      save();
-    }
-    if (event.key === "Escape") {
-      closeEditor();
-    }
-  });
+function editPassword() {
+  openProfilePasswordDialog();
 }
 
 function startGelButtonDrag(event) {
@@ -3614,6 +4899,7 @@ profileButton.addEventListener("click", () => openProfile(myProfile));
 chatAvatar.addEventListener("click", () => openFriendProfile(currentConversation));
 profileBackdrop.addEventListener("click", closeProfile);
 profileCloseButton.addEventListener("click", closeProfile);
+profileEditButton.addEventListener("click", toggleProfileDetailsEdit);
 profilePhotoButton.addEventListener("click", () => profilePhotoInput.click());
 profilePhotoInput.addEventListener("change", changeProfilePhoto);
 profileNameButton.addEventListener("click", changeProfileName);
@@ -3629,7 +4915,7 @@ profileNameInput.addEventListener("keydown", (event) => {
 });
 profileDetails.addEventListener("click", (event) => {
   const button = event.target.closest("[data-profile-field]");
-  if (button) editProfileField(button);
+  if (button && profilePanel.classList.contains("details-editing")) editProfileField(button);
   const passwordButton = event.target.closest("[data-password-action]");
   if (passwordButton) editPassword(passwordButton);
 });
@@ -3637,8 +4923,19 @@ profileLogoutButton.addEventListener("click", logout);
 seeAllFriendsButton.addEventListener("click", openAllFriends);
 friendsCloseButton.addEventListener("click", closeAllFriends);
 friendProfileCloseButton.addEventListener("click", closeFriendProfile);
+friendProfileNumber.closest("button")?.addEventListener("click", copyFriendProfileNumber);
 friendProfileMessageButton.addEventListener("click", messageActiveFriendProfile);
+friendProfileReportButton.addEventListener("click", reportActiveFriend);
+friendProfileBlockButton.addEventListener("click", blockActiveFriend);
 friendProfileVerifyButton.addEventListener("click", toggleActiveFriendVerification);
+friendProfilePasswordButton.addEventListener("click", () => {
+  if (!activeFriendProfile || !isAdminAccount()) return;
+  changeAdminUserPassword({
+    uid: activeFriendProfile.userId,
+    number: activeFriendProfile.number,
+    profile: getFriendProfile(activeFriendProfile)
+  });
+});
 friendProfileDeleteButton.addEventListener("click", deleteActiveFriendProfile);
 chatOptionsButton.addEventListener("click", toggleChatOptions);
 muteChatButton.addEventListener("click", toggleMuteChat);
@@ -3654,7 +4951,7 @@ emojiMenu.addEventListener("click", (event) => {
 });
 photoButton?.addEventListener("click", () => photoInput.click());
 inlinePhotoButton.addEventListener("click", () => photoInput.click());
-voiceButton.addEventListener("click", () => window.alert("Voice message option ready ache, recording backend add korle send hobe."));
+voiceButton.addEventListener("click", startVoiceRecording);
 fileButton?.addEventListener("click", () => fileInput.click());
 photoInput.addEventListener("change", () => sendAttachment(photoInput, "Photo"));
 fileInput?.addEventListener("change", () => sendAttachment(fileInput, "File"));
@@ -3676,6 +4973,7 @@ document.addEventListener("keydown", (event) => {
     closeFriendProfile();
   }
   if (event.key === "Escape") {
+    document.querySelector(".photo-viewer-overlay")?.remove();
     closeAttachmentMenu();
     closeEmojiMenu();
     closeChatOptions();
@@ -3689,20 +4987,20 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("click", (event) => {
-  if (Date.now() < suppressGelClickUntil) {
+  if (Date.now() < suppressGelClickUntil && !event.target.closest(".conversation")) {
     event.preventDefault();
     event.stopPropagation();
   }
 }, true);
 
 document.addEventListener("click", (event) => {
-  if (Date.now() < suppressGelClickUntil) {
+  if (Date.now() < suppressGelClickUntil && !event.target.closest(".conversation")) {
     event.preventDefault();
     event.stopPropagation();
     return;
   }
 
-  if (activeConversationMenu && Date.now() - menuOpenedAt < 450) {
+  if (activeConversationMenu && Date.now() - menuOpenedAt < 450 && !event.target.closest(".conversation")) {
     event.preventDefault();
     event.stopPropagation();
     return;
@@ -3727,8 +5025,10 @@ document.addEventListener("click", (event) => {
 
   if (activeConversationMenu && !event.target.closest(".conversation-action-menu")) {
     closeConversationMenu();
-    event.preventDefault();
-    event.stopPropagation();
+    if (!event.target.closest(".conversation")) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
     return;
   }
 
@@ -3779,6 +5079,18 @@ document.addEventListener("visibilitychange", () => {
 
 messageForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  if (voiceRecorder?.state === "recording") {
+    stopVoiceRecording();
+    return;
+  }
+  if (pendingVoiceBlob) {
+    sendVoiceMessage();
+    return;
+  }
+  if (pendingPhotoFile) {
+    sendPhotoAttachment();
+    return;
+  }
   const text = messageInput.value.trim();
   if (!text) return;
   messageInput.value = "";
