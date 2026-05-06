@@ -14,6 +14,12 @@
 </head>
 <body>
   <main class="phone-shell auth-pending" aria-label="WebChat mobile app">
+    <section class="app-splash" id="appSplash" aria-label="Loading WebChat">
+      <img src="logo.png" alt="WebChat">
+      <strong>WebChat</strong>
+      <span class="splash-loader" aria-hidden="true"></span>
+    </section>
+
     <section class="auth-screen" id="authScreen" aria-label="Login and signup" aria-hidden="true">
       <div class="auth-card">
         <div class="auth-brand">
@@ -86,7 +92,7 @@
     <section class="screen active" id="homeScreen">
       <header class="home-header">
         <button class="avatar-button" id="profileButton" type="button" aria-label="Profile">
-          <img src="https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=120&q=80" alt="">
+          <img src="" alt="">
         </button>
         <h1><span>W</span><small>eb</small><span>C</span><small>hat</small></h1>
         <div class="header-actions">
@@ -126,7 +132,9 @@
     <section class="screen" id="chatScreen">
       <header class="chat-header">
         <button class="back-button" id="backButton" type="button" aria-label="Back to chats">&lt;</button>
-        <img id="chatAvatar" class="chat-avatar" src="" alt="">
+        <span class="chat-avatar-wrap" id="chatAvatarWrap">
+          <img id="chatAvatar" class="chat-avatar" src="" alt="">
+        </span>
         <div class="chat-title">
           <h2 id="chatName"></h2>
           <p id="chatStatus"></p>
@@ -196,6 +204,7 @@
         <header class="profile-header">
           <h2>Profile</h2>
           <button class="icon-button profile-back-button" id="profileCloseButton" type="button" aria-label="Back">&lt;</button>
+          <button class="profile-edit-toggle" id="profileEditButton" type="button">Edit</button>
         </header>
 
         <section class="profile-hero">
@@ -288,7 +297,10 @@
 
         <div class="friend-profile-actions">
           <button class="friend-message-button" id="friendProfileMessageButton" type="button">Message</button>
+          <button class="friend-report-button" id="friendProfileReportButton" type="button">Report user</button>
+          <button class="friend-block-button" id="friendProfileBlockButton" type="button">Block user</button>
           <button class="friend-verify-button" id="friendProfileVerifyButton" type="button">Verify user</button>
+          <button class="friend-password-button" id="friendProfilePasswordButton" type="button">Change password</button>
           <button class="friend-delete-button" id="friendProfileDeleteButton" type="button">Delete user</button>
         </div>
       </article>
