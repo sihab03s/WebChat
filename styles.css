@@ -550,6 +550,11 @@ button.gel-returning {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: opacity 120ms ease;
+}
+
+.image-loading {
+  opacity: 0;
 }
 
 .header-actions {
@@ -1558,9 +1563,67 @@ button.gel-returning {
   font-weight: 800;
 }
 
+.voice-play {
+  display: grid;
+  flex: 0 0 34px;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  font-size: 14px;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.message-row.them .voice-play {
+  background: #dfeeff;
+  color: var(--brand);
+}
+
+.voice-wave {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 3px;
+  min-width: 96px;
+  height: 34px;
+}
+
+.voice-wave span {
+  width: 3px;
+  height: calc(7px + var(--bar) * 3px);
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.62;
+}
+
+.voice-wave.playing span {
+  animation: voicePulse 760ms ease-in-out infinite;
+  animation-delay: calc(var(--bar) * 45ms);
+}
+
+.voice-duration {
+  flex: 0 0 auto;
+  min-width: 34px;
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0.75;
+}
+
 .message.voice-message audio {
-  width: 170px;
-  height: 32px;
+  display: none;
+}
+
+@keyframes voicePulse {
+  0%,
+  100% {
+    transform: scaleY(0.7);
+  }
+
+  50% {
+    transform: scaleY(1.2);
+  }
 }
 
 .photo-file-icon {
@@ -1699,6 +1762,12 @@ button.gel-returning {
   gap: 0;
   min-height: 16px;
   margin: 3px 8px 0 0;
+}
+
+.message-status.pending {
+  color: #7a879a;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .message-status .tick {
@@ -1943,19 +2012,19 @@ button.gel-returning {
   inset: 0;
   z-index: 2;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   height: 40px;
-  padding: 0 8px 0 14px;
+  padding: 0 8px;
   border-radius: 18px;
   background: #f0f2f5;
   color: var(--ink);
 }
 
 .voice-draft.recording {
-  grid-template-columns: minmax(0, 1fr) auto;
-  background: #fff1f0;
+  grid-template-columns: auto auto auto minmax(0, 1fr) auto;
+  background: #f0f2f5;
 }
 
 .voice-draft-status {
@@ -1963,18 +2032,64 @@ button.gel-returning {
   font-weight: 800;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--brand);
+  color: #d92d20;
 }
 
-.voice-draft.recording .voice-draft-status,
+.voice-record-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: #d92d20;
+  box-shadow: 0 0 0 5px rgba(217, 45, 32, 0.1);
+  animation: voiceDot 900ms ease-in-out infinite;
+}
+
+.voice-draft.paused .voice-record-dot {
+  opacity: 0.45;
+  animation: none;
+}
+
+.voice-draft-wave {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  height: 28px;
+}
+
+.voice-draft-wave span {
+  width: 3px;
+  height: calc(6px + var(--bar) * 3px);
+  border-radius: 999px;
+  background: #7a879a;
+  opacity: 0.72;
+}
+
+.voice-draft-wave.recording span {
+  animation: voicePulse 760ms ease-in-out infinite;
+  animation-delay: calc(var(--bar) * 45ms);
+}
+
+.voice-draft.paused .voice-draft-wave span {
+  animation-play-state: paused;
+}
+
+.voice-draft-play {
+  color: var(--brand) !important;
+  background: #dfeeff !important;
+}
+
+.voice-pause {
+  color: var(--brand) !important;
+  background: #dfeeff !important;
+}
+
 .voice-delete {
   color: #d92d20;
 }
 
 .voice-draft audio {
-  width: 100%;
-  min-width: 0;
-  height: 28px;
+  display: none;
 }
 
 .photo-draft img {
@@ -2001,6 +2116,17 @@ button.gel-returning {
   width: 17px;
   height: 17px;
   fill: currentColor;
+}
+
+@keyframes voiceDot {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+
+  50% {
+    opacity: 1;
+  }
 }
 
 .attachment-menu {
@@ -2889,9 +3015,9 @@ button.gel-returning {
 }
 
 .friend-message-button,
-.friend-report-button,
 .friend-block-button,
 .friend-verify-button,
+.friend-restrict-button,
 .friend-delete-button {
   position: relative;
   min-height: 46px;
@@ -2909,7 +3035,6 @@ button.gel-returning {
   color: #d92d20;
 }
 
-.friend-report-button,
 .friend-block-button {
   background: #fff7ed;
   color: #c2410c;
@@ -2920,7 +3045,13 @@ button.gel-returning {
   color: var(--brand);
 }
 
-.friend-verify-button[hidden] {
+.friend-restrict-button {
+  background: #eef2f7;
+  color: #475467;
+}
+
+.friend-verify-button[hidden],
+.friend-restrict-button[hidden] {
   display: none;
 }
 

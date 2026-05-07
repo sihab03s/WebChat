@@ -298,9 +298,9 @@ const friendProfileBio = document.querySelector("#friendProfileBio");
 const friendProfileUsername = document.querySelector("#friendProfileUsername");
 const friendProfileNumber = document.querySelector("#friendProfileNumber");
 const friendProfileMessageButton = document.querySelector("#friendProfileMessageButton");
-const friendProfileReportButton = document.querySelector("#friendProfileReportButton");
 const friendProfileBlockButton = document.querySelector("#friendProfileBlockButton");
 const friendProfileVerifyButton = document.querySelector("#friendProfileVerifyButton");
+const friendProfileRestrictButton = document.querySelector("#friendProfileRestrictButton");
 const friendProfilePasswordButton = document.querySelector("#friendProfilePasswordButton");
 const friendProfileDeleteButton = document.querySelector("#friendProfileDeleteButton");
 const savedOverlay = document.querySelector("#savedOverlay");
@@ -328,6 +328,7 @@ let menuOpenedAt = 0;
 let confirmOpenedAt = 0;
 let activeProfile = null;
 let activeFriendProfile = null;
+let activeFriendProfileFromAdmin = false;
 let currentUser = null;
 let firebaseUser = null;
 let unsubscribeChats = null;
@@ -355,34 +356,41 @@ let voiceRecorder = null;
 let voiceChunks = [];
 let voiceStream = null;
 let voiceStartedAt = 0;
+let voicePausedAt = 0;
+let voicePausedMs = 0;
 let voiceTimer = null;
 let pendingVoiceBlob = null;
 let pendingVoiceUrl = "";
 let voiceDiscarding = false;
 let voiceMimeType = "audio/webm";
+let voiceAutoSendAfterStop = false;
 let pendingPhotoFile = null;
 let pendingPhotoUrl = "";
 const lastNotificationKeys = new Map();
 const presenceStatusCache = new Map();
 const listPresenceUnsubscribers = new Map();
 const listPresenceTimers = new Map();
-
-const myProfile = {
-  name: "Sihab Ahmed",
-  status: "Active now",
-  avatar: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=260&q=80",
-  bio: "Building a clean chat app",
-  username: "@sihab.chat",
-  number: "+880 1712-345678",
-  editable: true
-};
+const deliveredAckCache = new Map();
+let outgoingQueueSyncing = false;
 
 const authUsersKey = "webchatUsers";
 const authSessionKey = "webchatCurrentUser";
 const uiStateKey = "webchatUiState";
+const profileCachePrefix = "webchatProfileCache";
+const outgoingQueuePrefix = "webchatOutgoingQueue";
 const blankUserAvatar = "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20200%20200%27%3E%3Crect%20width%3D%27200%27%20height%3D%27200%27%20fill%3D%27%23fff%27/%3E%3Ccircle%20cx%3D%27100%27%20cy%3D%2758%27%20r%3D%2741%27%20fill%3D%27%23bdbdbd%27/%3E%3Cpath%20d%3D%27M37%20171c0-47%2025-74%2063-74s63%2027%2063%2074c0%2017-11%2028-28%2028H65c-17%200-28-11-28-28Z%27%20fill%3D%27%23bdbdbd%27/%3E%3C/svg%3E";
 const defaultAvatar = blankUserAvatar;
 const messageRetentionMs = 30 * 24 * 60 * 60 * 1000;
+
+const myProfile = {
+  name: "",
+  status: "",
+  avatar: defaultAvatar,
+  bio: "",
+  username: "",
+  number: "",
+  editable: true
+};
 
 const demoUsers = [
   {
@@ -549,6 +557,42 @@ function writeUsers(users) {
 
 function uiStorageKey() {
   return firebaseUser ? `${uiStateKey}:${firebaseUser.uid}` : uiStateKey;
+}
+
+function profileCacheKey(uid) {
+  return `${profileCachePrefix}:${uid}`;
+}
+
+function readCachedUserProfile(uid) {
+  if (!uid) return null;
+  try {
+    const cached = JSON.parse(localStorage.getItem(profileCacheKey(uid)));
+    if (!cached?.profile) return null;
+    return normalizeUserDoc(uid, {
+      uid,
+      number: cached.number || cached.profile.number || "",
+      ...cached.profile
+    });
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeCachedUserProfile(user) {
+  if (!user?.uid && !user?.id) return;
+  try {
+    localStorage.setItem(profileCacheKey(user.uid || user.id), JSON.stringify({
+      uid: user.uid || user.id,
+      number: user.number || user.profile?.number || "",
+      profile: {
+        ...(user.profile || {}),
+        editable: true
+      },
+      savedAt: Date.now()
+    }));
+  } catch (error) {
+    console.warn("Profile cache full", error);
+  }
 }
 
 function saveUiState(state) {
@@ -1001,7 +1045,7 @@ async function updateSignupPhoto() {
   reader.addEventListener("load", async () => {
     const url = reader.result;
     pendingSignupProfile.avatar = url;
-    signupCompletePhoto.src = url;
+    setImageAfterLoad(signupCompletePhoto, url, pendingSignupProfile.name || "Profile");
     await updateDoc(doc(db, "users", pendingSignupProfile.uid), {
       "profile.avatar": url,
       updatedAt: firestoreServerTimestamp()
@@ -1133,6 +1177,26 @@ function setVerifiedName(element, name, verified = false) {
   if (verified) element.appendChild(createVerifiedBadge());
 }
 
+function setImageAfterLoad(image, src, alt = "") {
+  if (!image) return;
+  const nextSrc = src || defaultAvatar;
+  image.alt = alt;
+  image.classList.add("image-loading");
+  image.onload = () => {
+    image.classList.remove("image-loading");
+  };
+  image.onerror = () => {
+    if (nextSrc !== defaultAvatar) {
+      setImageAfterLoad(image, defaultAvatar, alt);
+      return;
+    }
+    image.classList.remove("image-loading");
+  };
+  image.removeAttribute("src");
+  image.src = nextSrc;
+  if (image.complete && image.naturalWidth) image.classList.remove("image-loading");
+}
+
 function setAuthLoading(button, isLoading) {
   button.classList.toggle("loading", isLoading);
   button.disabled = isLoading;
@@ -1163,7 +1227,7 @@ function showSignupComplete(profile) {
   signupComplete.setAttribute("aria-hidden", "false");
   authTitle.classList.add("hidden");
   authSwitchButton.textContent = "Login";
-  signupCompletePhoto.src = profile.avatar;
+  setImageAfterLoad(signupCompletePhoto, profile.avatar, profile.name || "Profile");
   signupCompleteName.textContent = profile.name;
   setAuthMessage("");
   authMessage.classList.add("hidden");
@@ -1172,12 +1236,14 @@ function showSignupComplete(profile) {
 function applyUserProfile(user) {
   currentUser = user;
   Object.assign(myProfile, user.profile, { editable: true });
-  profileButton.querySelector("img").src = myProfile.avatar || defaultAvatar;
+  writeCachedUserProfile(user);
+  setImageAfterLoad(profileButton.querySelector("img"), myProfile.avatar, myProfile.name || "Profile");
 }
 
 function persistCurrentUserProfile() {
   if (!currentUser || !firebaseUser) return;
   currentUser.profile = { ...myProfile, editable: true };
+  writeCachedUserProfile(currentUser);
   updateDoc(doc(db, "users", firebaseUser.uid), {
     ...profilePayload(myProfile),
     updatedAt: firestoreServerTimestamp()
@@ -1384,6 +1450,20 @@ function completeLogin(user) {
   messages.innerHTML = "";
 }
 
+function refreshLoggedInProfile(user) {
+  applyUserProfile(user);
+  adminUsersButton.classList.toggle("active", user.number === "0");
+  if (profileOverlay.classList.contains("active")) openProfile(myProfile);
+}
+
+function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) return;
+  if (!["http:", "https:"].includes(window.location.protocol)) return;
+  navigator.serviceWorker.register("./sw.js").catch((error) => {
+    console.warn("Offline app cache register failed", error);
+  });
+}
+
 function createSessionId() {
   if (window.crypto?.randomUUID) return window.crypto.randomUUID();
   return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1464,11 +1544,20 @@ function resetSessionView(showLogin = false) {
   handlingHistoryPop = false;
   currentUser = null;
   firebaseUser = null;
+  Object.assign(myProfile, {
+    name: "",
+    status: "",
+    avatar: defaultAvatar,
+    bio: "",
+    username: "",
+    number: "",
+    editable: true
+  });
   pendingLoginNumber = "";
   currentConversation = null;
   startOnHomeAfterLogin = false;
   conversations.length = 0;
-  profileButton.querySelector("img").src = defaultAvatar;
+  setImageAfterLoad(profileButton.querySelector("img"), defaultAvatar, "Profile");
   closeHomeOptions();
   closeChatOptions();
   closeAttachmentMenu();
@@ -1668,6 +1757,11 @@ function initializeAuth() {
     if (keepLoginSpinner) setAuthLoading(loginSubmitButton, true);
     phoneShell.classList.add("auth-pending");
     firebaseUser = authUser;
+    const cachedProfile = readCachedUserProfile(authUser.uid);
+    if (cachedProfile) {
+      phoneShell.classList.remove("auth-pending");
+      completeLogin(cachedProfile);
+    }
     let profile = await loadUserProfile(authUser.uid);
     if (!profile && pendingLoginNumber === "0") {
       profile = await createUserProfileDocument({ user: authUser }, "0", "Sihab Ahmed", authUser.email || numberToEmail("0")).catch(() => null);
@@ -1683,9 +1777,14 @@ function initializeAuth() {
     }
     phoneShell.classList.remove("auth-pending");
     await setupSingleUserSession(authUser.uid);
-    completeLogin(profile);
+    if (cachedProfile) {
+      refreshLoggedInProfile(profile);
+    } else {
+      completeLogin(profile);
+    }
     pendingLoginNumber = "";
     setupPresence(authUser.uid);
+    flushOutgoingQueue();
   });
 }
 
@@ -1841,6 +1940,7 @@ async function subscribeToMyChats() {
         lastMessage: localLast?.text || remoteLastMessage,
         lastSenderId: remoteLastSender,
         seenBy: data.seenBy || {},
+        deliveredBy: data.deliveredBy || {},
         reactionsByMessage: data.reactionsByMessage || {},
         pinned: !!data.pinnedBy?.[ownerUid],
         pinnedAt: data.pinnedAtBy?.[ownerUid] || 0,
@@ -1855,6 +1955,7 @@ async function subscribeToMyChats() {
     const visibleRows = rows.filter(Boolean);
     syncListPresenceSubscriptions(visibleRows);
     visibleRows.forEach((row) => {
+      acknowledgeConversationDelivered(row, ownerUid);
       const key = `${row.lastSenderId || ""}|${row.lastMessage || ""}`;
       const previousKey = lastNotificationKeys.get(row.chatId);
       if (notificationStatePrimed && previousKey && previousKey !== key && row.lastSenderId && row.lastSenderId !== ownerUid) {
@@ -1878,12 +1979,14 @@ async function subscribeToMyChats() {
       if (updatedCurrent) {
         Object.assign(currentConversation, {
           seenBy: updatedCurrent.seenBy || currentConversation.seenBy,
+          deliveredBy: updatedCurrent.deliveredBy || currentConversation.deliveredBy,
           unread: 0,
           lastMessage: currentConversation.lastMessage || updatedCurrent.lastMessage,
           lastSenderId: currentConversation.lastSenderId || updatedCurrent.lastSenderId,
           reactionsByMessage: updatedCurrent.reactionsByMessage || currentConversation.reactionsByMessage || {}
         });
         applySeenState(currentConversation);
+        applyDeliveryState(currentConversation);
         applyConversationReactions(currentConversation);
         if (currentConversation.messagesLoaded) renderMessages();
       }
@@ -1928,6 +2031,7 @@ function subscribeToMessages(conversation) {
       ? []
       : mergeLocalMessages(ownerUid, chatId, remoteMessages, hiddenIds);
     applySeenState(conversation);
+    applyDeliveryState(conversation);
     applyConversationReactions(conversation);
     writeLocalMessages(ownerUid, chatId, conversation.messages);
     conversation.messagesLoaded = true;
@@ -1943,6 +2047,122 @@ const pendingLocalClears = new Set();
 
 function localMessagesKey(uid, chatId) {
   return `webchatLocalMessages:${uid}:${chatId}`;
+}
+
+function outgoingQueueKey(uid) {
+  return `${outgoingQueuePrefix}:${uid}`;
+}
+
+function readOutgoingQueue(uid = firebaseUser?.uid) {
+  if (!uid) return [];
+  try {
+    const value = localStorage.getItem(outgoingQueueKey(uid));
+    const parsed = value ? JSON.parse(value) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function writeOutgoingQueue(queue, uid = firebaseUser?.uid) {
+  if (!uid) return;
+  try {
+    localStorage.setItem(outgoingQueueKey(uid), JSON.stringify(queue || []));
+  } catch (error) {
+    console.warn("Outgoing queue cache full", error);
+  }
+}
+
+function queueOutgoingMessage(conversation, message, messageData, lastMessage, hadChat) {
+  if (!firebaseUser || !conversation?.chatId || !message?.id) return;
+  const queue = readOutgoingQueue(firebaseUser.uid).filter((item) => item.localMessageId !== message.id);
+  queue.push({
+    queueId: `${message.id}-${Date.now()}`,
+    localMessageId: message.id,
+    chatId: conversation.chatId,
+    userId: conversation.userId,
+    lastMessage,
+    hadChat,
+    conversation: {
+      id: conversation.id,
+      chatId: conversation.chatId,
+      userId: conversation.userId,
+      name: conversation.name,
+      avatar: conversation.avatar,
+      number: conversation.number,
+      status: conversation.status,
+      verified: !!conversation.verified
+    },
+    messageData: {
+      ...messageData,
+      createdAt: null
+    }
+  });
+  writeOutgoingQueue(queue, firebaseUser.uid);
+}
+
+function isOfflineSendError(error) {
+  if (!navigator.onLine) return true;
+  const code = String(error?.code || error?.message || "").toLowerCase();
+  return code.includes("unavailable") || code.includes("network") || code.includes("offline");
+}
+
+function findOrCreateQueuedConversation(item) {
+  let conversation = conversations.find((row) => row.chatId === item.chatId || row.userId === item.userId);
+  if (conversation) return conversation;
+  conversation = {
+    ...(item.conversation || {}),
+    id: item.chatId || item.conversation?.id,
+    chatId: item.chatId,
+    userId: item.userId,
+    messages: readLocalMessages(firebaseUser.uid, item.chatId),
+    messagesLoaded: true,
+    remote: true
+  };
+  conversations.push(conversation);
+  return conversation;
+}
+
+async function flushOutgoingQueue() {
+  if (outgoingQueueSyncing || !firebaseUser || !navigator.onLine) return;
+  const uid = firebaseUser.uid;
+  let queue = readOutgoingQueue(uid);
+  if (!queue.length) return;
+  outgoingQueueSyncing = true;
+
+  try {
+    for (const item of [...queue]) {
+      const conversation = findOrCreateQueuedConversation(item);
+      conversation.messages = readLocalMessages(uid, item.chatId);
+      const localMessage = conversation.messages.find((message) => message.id === item.localMessageId);
+      if (!localMessage) {
+        queue = queue.filter((queued) => queued.queueId !== item.queueId);
+        writeOutgoingQueue(queue, uid);
+        continue;
+      }
+
+      const messageId = await saveOutgoingRemoteMessage(conversation, {
+        ...item.messageData,
+        createdAt: firestoreServerTimestamp()
+      }, item.lastMessage, item.hadChat);
+      removeLocalMessage(uid, item.chatId, localMessage.clientId || item.localMessageId);
+      localMessage.id = messageId;
+      localMessage.status = "sent";
+      applyDeliveryState(conversation);
+      writeLocalMessages(uid, item.chatId, conversation.messages);
+      queue = queue.filter((queued) => queued.queueId !== item.queueId);
+      writeOutgoingQueue(queue, uid);
+      if (currentConversation?.chatId === item.chatId) {
+        currentConversation.messages = conversation.messages;
+        renderMessages();
+      }
+      renderConversations(searchInput.value);
+    }
+  } catch (error) {
+    console.warn("Outgoing queue sync paused", error);
+  } finally {
+    outgoingQueueSyncing = false;
+  }
 }
 
 function hiddenConversationsKey(uid) {
@@ -1997,6 +2217,7 @@ async function normalizeMessageDoc(messageDoc, ownerUid, index = 0, chatId = "")
     from: fromMe ? "me" : "them",
     senderId: data.senderId,
     receiverId: data.receiverId,
+    clientId: data.clientId || "",
     encrypted,
     text,
     type: data.type || "text",
@@ -2044,16 +2265,21 @@ function writeLocalMessages(uid, chatId, messagesList) {
 
 function mergeLocalMessages(uid, chatId, remoteMessages, hiddenIds = new Set()) {
   const merged = new Map();
+  const localClientIds = new Map();
   readLocalMessages(uid, chatId).forEach((message, index) => {
     if (!message?.id || hiddenIds.has(message.id)) return;
-    merged.set(message.id, {
+    const normalized = {
       ...message,
       localOrder: message.createdAtMs || message.localOrder || index
-    });
+    };
+    merged.set(message.id, normalized);
+    if (message.clientId) localClientIds.set(message.clientId, message.id);
   });
   remoteMessages.forEach((message, index) => {
     if (!message?.id || hiddenIds.has(message.id)) return;
-    const existing = merged.get(message.id);
+    const localId = message.clientId ? localClientIds.get(message.clientId) : "";
+    const existing = merged.get(message.id) || (localId ? merged.get(localId) : null);
+    if (localId && localId !== message.id) merged.delete(localId);
     merged.set(message.id, {
       ...existing,
       ...message,
@@ -2076,6 +2302,40 @@ function applySeenState(conversation) {
     if (message.from !== "me") return;
     const messageTime = message.createdAtMs || message.localOrder || 0;
     if (messageTime && messageTime <= seenAt) message.status = "seen";
+  });
+}
+
+function applyDeliveryState(conversation) {
+  if (!conversation || !firebaseUser) return;
+  const deliveredAt = conversation.deliveredBy?.[conversation.userId] || 0;
+  conversation.messages.forEach((message) => {
+    if (message.from !== "me") return;
+    if (message.status === "seen" || message.status === "pending") return;
+    const messageTime = message.createdAtMs || message.localOrder || 0;
+    if (message.status === "delivered" || (deliveredAt && messageTime && messageTime <= deliveredAt)) {
+      message.status = "delivered";
+      return;
+    }
+    message.status = "sent";
+  });
+}
+
+function acknowledgeConversationDelivered(conversation, ownerUid = firebaseUser?.uid) {
+  if (!ownerUid || !conversation?.chatId || !conversation.lastSenderId || conversation.lastSenderId === ownerUid) return;
+  const deliveryKey = `${conversation.chatId}:${conversation.updatedAt || conversation.lastMessage || ""}`;
+  if (deliveredAckCache.get(conversation.chatId) === deliveryKey) return;
+  deliveredAckCache.set(conversation.chatId, deliveryKey);
+  const deliveredAt = Date.now();
+  conversation.deliveredBy = {
+    ...(conversation.deliveredBy || {}),
+    [ownerUid]: deliveredAt
+  };
+  setDoc(doc(db, "chats", conversation.chatId), {
+    deliveredBy: {
+      [ownerUid]: deliveredAt
+    }
+  }, { merge: true }).catch(() => {
+    deliveredAckCache.delete(conversation.chatId);
   });
 }
 
@@ -2807,9 +3067,9 @@ async function addOrOpenUserChat(user) {
   openConversation(conversation.id);
 }
 
-function openUserProfile(user) {
+function openUserProfile(user, options = {}) {
   const conversation = findConversationByUser(user) || createConversationFromUser(user);
-  openFriendProfile(conversation);
+  openFriendProfile(conversation, options);
 }
 
 function isAdminAccount(user = currentUser) {
@@ -3135,12 +3395,12 @@ async function openAdminUsers() {
         event.stopPropagation();
         return;
       }
-      openUserProfile(user);
+      openUserProfile(user, { fromAdminUsers: true });
     });
     row.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
-      openUserProfile(user);
+      openUserProfile(user, { fromAdminUsers: true });
     });
     row.addEventListener("pointerdown", (event) => {
       if (event.target.closest("button")) return;
@@ -3423,16 +3683,35 @@ function renderMessages() {
     return;
   }
 
-  messages.innerHTML = `<div class="time-divider">Today</div>`;
+  const previousScrollBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
+  const shouldStickToBottom = previousScrollBottom < 90 || messages.children.length <= 1;
+  const reusableVoiceRows = new Map([...messages.querySelectorAll(".message-row.voice-row[data-message-id]")].map((row) => {
+    return [row.dataset.messageId, row];
+  }));
+
+  messages.replaceChildren();
+  const divider = document.createElement("div");
+  divider.className = "time-divider";
+  divider.textContent = "Today";
+  messages.appendChild(divider);
   const lastOwnMessage = [...currentConversation.messages].reverse().find((message) => message.from === "me");
   applySeenState(currentConversation);
+  applyDeliveryState(currentConversation);
   const lastSeenOwnMessage = [...currentConversation.messages].reverse().find((message) => {
     return message.from === "me" && message.status === "seen";
   });
 
   currentConversation.messages.forEach((message) => {
+    const reusableRow = message.type === "voice" ? reusableVoiceRows.get(message.id) : null;
+    if (reusableRow) {
+      reusableRow.className = `message-row ${message.from} voice-row`;
+      messages.appendChild(reusableRow);
+      return;
+    }
     const row = document.createElement("div");
     row.className = `message-row ${message.from}`;
+    row.dataset.messageId = message.id;
+    if (message.type === "voice") row.classList.add("voice-row");
     if (message.from === "them") {
       const avatar = document.createElement("img");
       avatar.className = "message-avatar";
@@ -3461,13 +3740,8 @@ function renderMessages() {
       bubble.append(icon, details);
     } else if (message.type === "voice" && message.url) {
       bubble.classList.add("voice-message");
-      const label = document.createElement("span");
-      label.className = "voice-label";
-      label.textContent = "Voice";
-      const audio = document.createElement("audio");
-      audio.controls = true;
-      audio.src = message.url;
-      bubble.append(label, audio);
+      const voice = createVoiceBubble(message);
+      bubble.append(voice.play, voice.wave, voice.duration, voice.audio);
     } else {
       bubble.textContent = message.text;
     }
@@ -3483,7 +3757,13 @@ function renderMessages() {
         return;
       }
       closeMessageActions();
-      if (message.type === "voice") return;
+      if (message.type === "voice") {
+        const audio = bubble.querySelector("audio");
+        if (!audio) return;
+        if (audio.paused) audio.play().catch(() => {});
+        else audio.pause();
+        return;
+      }
       if (message.type === "photo" && message.url) {
         openPhotoViewer(message);
         return;
@@ -3521,7 +3801,11 @@ function renderMessages() {
     messages.appendChild(row);
   });
 
-  messages.scrollTop = messages.scrollHeight;
+  if (shouldStickToBottom) {
+    messages.scrollTop = messages.scrollHeight;
+  } else {
+    messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight - previousScrollBottom);
+  }
 }
 
 function openPhotoViewer(message) {
@@ -3561,11 +3845,49 @@ function openPhotoViewer(message) {
   phoneShell.appendChild(overlay);
 }
 
+function createVoiceBubble(message) {
+  const play = document.createElement("span");
+  play.className = "voice-play";
+  play.textContent = "\u25b6";
+
+  const wave = document.createElement("span");
+  wave.className = "voice-wave";
+  for (let index = 0; index < 18; index += 1) {
+    const bar = document.createElement("span");
+    bar.style.setProperty("--bar", String((index % 5) + 1));
+    wave.appendChild(bar);
+  }
+
+  const duration = document.createElement("small");
+  duration.className = "voice-duration";
+  duration.textContent = message.fileName?.replace(/^Voice\s*/i, "") || "0:00";
+
+  const audio = document.createElement("audio");
+  audio.preload = "metadata";
+  audio.src = message.url;
+  audio.addEventListener("play", () => {
+    play.textContent = "\u275a\u275a";
+    wave.classList.add("playing");
+  });
+  audio.addEventListener("pause", () => {
+    play.textContent = "\u25b6";
+    wave.classList.remove("playing");
+  });
+  audio.addEventListener("ended", () => {
+    play.textContent = "\u25b6";
+    wave.classList.remove("playing");
+  });
+
+  return { play, wave, duration, audio };
+}
+
 function createMessageStatus(message) {
   const status = document.createElement("span");
   status.className = `message-status ${message.status || "sent"}`;
 
-  if (message.status === "seen") {
+  if (message.status === "pending") {
+    status.textContent = "Pending";
+  } else if (message.status === "seen") {
     const image = document.createElement("img");
     image.src = currentConversation.avatar;
     image.alt = "Seen";
@@ -3685,13 +4007,12 @@ function getFriendProfile(conversation) {
 function openProfile(profile = myProfile) {
   activeProfile = profile;
   if (profile === myProfile) saveUiState({ view: "profile" });
-  profilePhoto.src = profile.avatar;
-  profilePhoto.alt = profile.name;
-  setVerifiedName(profileName, profile.name, profile.verified);
+  setImageAfterLoad(profilePhoto, profile.avatar || defaultAvatar, profile.name || "Profile");
+  setVerifiedName(profileName, profile.name || "", profile.verified);
   profileStatus.textContent = "";
-  document.querySelector("#profileBio").textContent = profile.bio;
-  document.querySelector("#profileUsername").textContent = profile.username;
-  document.querySelector("#profileNumber").textContent = profile.number;
+  document.querySelector("#profileBio").textContent = profile.bio || "";
+  document.querySelector("#profileUsername").textContent = profile.username || "";
+  document.querySelector("#profileNumber").textContent = profile.number || "";
   profilePhotoButton.classList.toggle("hidden", !profile.editable);
   profileNameButton.classList.toggle("hidden", !profile.editable);
   profileEditButton.classList.toggle("hidden", !profile.editable);
@@ -3769,8 +4090,9 @@ function renderAllFriends() {
   });
 }
 
-function openFriendProfile(conversation) {
+function openFriendProfile(conversation, options = {}) {
   activeFriendProfile = conversation;
+  activeFriendProfileFromAdmin = !!options.fromAdminUsers;
   saveUiState({
     view: "friendProfile",
     conversationId: conversation.id,
@@ -3779,8 +4101,7 @@ function openFriendProfile(conversation) {
     number: conversation.number
   });
   const profile = getFriendProfile(conversation);
-  friendProfilePhoto.src = profile.avatar;
-  friendProfilePhoto.alt = profile.name;
+  setImageAfterLoad(friendProfilePhoto, profile.avatar, profile.name);
   friendPhotoWrap.classList.toggle("active", profile.status === "Active now");
   friendPhotoWrap.classList.remove("offline");
   setVerifiedName(friendProfileName, profile.name, profile.verified);
@@ -3788,10 +4109,14 @@ function openFriendProfile(conversation) {
   friendProfileBio.textContent = profile.bio;
   friendProfileUsername.textContent = profile.username;
   friendProfileNumber.textContent = profile.number;
+  friendProfileBlockButton.hidden = activeFriendProfileFromAdmin;
   friendProfileVerifyButton.hidden = !isAdminAccount();
+  friendProfileRestrictButton.hidden = !isAdminAccount();
   friendProfilePasswordButton.hidden = !isAdminAccount();
-  friendProfileDeleteButton.hidden = !isAdminAccount();
+  friendProfileDeleteButton.hidden = !activeFriendProfileFromAdmin && !conversation.chatId;
+  friendProfileDeleteButton.textContent = activeFriendProfileFromAdmin ? "Delete user" : "Delete chat";
   friendProfileVerifyButton.textContent = profile.verified ? "Remove verify badge" : "Give verify badge";
+  friendProfileRestrictButton.textContent = conversation.restricted ? "Unrestrict user" : "Restrict user";
   friendProfileOverlay.classList.add("active");
   friendProfileOverlay.setAttribute("aria-hidden", "false");
   friendProfileCloseButton.focus();
@@ -3806,30 +4131,6 @@ async function copyFriendProfileNumber() {
   window.setTimeout(() => {
     friendProfileNumber.textContent = previous;
   }, 1100);
-}
-
-async function reportActiveFriend() {
-  if (!activeFriendProfile || !firebaseUser) return;
-  const ok = await showConfirmDialog({
-    title: "Report user?",
-    message: activeFriendProfile.name,
-    confirmText: "Report",
-    danger: true
-  });
-  if (!ok) return;
-  try {
-    await addDoc(collection(db, "reports"), {
-      reporterId: firebaseUser.uid,
-      reportedUserId: activeFriendProfile.userId,
-      reportedNumber: activeFriendProfile.number || "",
-      reportedName: activeFriendProfile.name || "",
-      chatId: activeFriendProfile.chatId || "",
-      createdAt: firestoreServerTimestamp()
-    });
-    window.alert("Report sent");
-  } catch (error) {
-    window.alert("Report send hoy nai. Firebase rules check koro.");
-  }
 }
 
 async function blockActiveFriend() {
@@ -3850,6 +4151,7 @@ async function blockActiveFriend() {
 function closeFriendProfile() {
   friendProfileOverlay.classList.remove("active");
   friendProfileOverlay.setAttribute("aria-hidden", "true");
+  activeFriendProfileFromAdmin = false;
   if (friendsOverlay.classList.contains("active")) {
     saveUiState({ view: "friends" });
   } else if (profileOverlay.classList.contains("active")) {
@@ -3892,8 +4194,53 @@ async function toggleActiveFriendVerification() {
   renderProfileFriends();
 }
 
+async function toggleActiveFriendRestriction() {
+  if (!activeFriendProfile || !isAdminAccount()) return;
+  const nextRestricted = !activeFriendProfile.restricted;
+
+  activeFriendProfile.restricted = nextRestricted;
+  conversations.forEach((conversation) => {
+    if (conversation.userId === activeFriendProfile.userId) conversation.restricted = nextRestricted;
+  });
+  friendProfileRestrictButton.textContent = nextRestricted ? "Unrestrict user" : "Restrict user";
+
+  try {
+    await updateDoc(doc(db, "users", activeFriendProfile.userId), {
+      restricted: nextRestricted,
+      updatedAt: firestoreServerTimestamp()
+    });
+  } catch (error) {
+    activeFriendProfile.restricted = !nextRestricted;
+    conversations.forEach((conversation) => {
+      if (conversation.userId === activeFriendProfile.userId) conversation.restricted = !nextRestricted;
+    });
+    friendProfileRestrictButton.textContent = !nextRestricted ? "Unrestrict user" : "Restrict user";
+    window.alert("Restrict update hoy nai. Firebase rules check koro.");
+    return;
+  }
+
+  renderConversations(searchInput.value);
+  if (adminUsersOverlay.classList.contains("active")) openAdminUsers();
+}
+
 async function deleteActiveFriendProfile() {
-  if (!activeFriendProfile || !firebaseUser || !isAdminAccount()) return;
+  if (!activeFriendProfile || !firebaseUser) return;
+
+  if (!activeFriendProfileFromAdmin) {
+    const conversation = activeFriendProfile;
+    const ok = await showConfirmDialog({
+      title: "Delete chat?",
+      message: conversation.name,
+      confirmText: "Delete",
+      danger: true
+    });
+    if (!ok) return;
+    closeFriendProfile();
+    await deleteConversationForCurrentUser(conversation);
+    return;
+  }
+
+  if (!isAdminAccount()) return;
 
   const ok = await showConfirmDialog({
     title: "Delete user?",
@@ -4128,10 +4475,11 @@ async function sendMessage(text) {
     text,
     time: currentClockTime(),
     date: "Today",
-    status: "sent",
+    status: navigator.onLine ? "sent" : "pending",
     createdAtMs: Date.now(),
     localOrder: Date.now()
   };
+  message.clientId = message.id;
 
   conversation.messages.push(message);
   conversation.messagesLoaded = true;
@@ -4140,25 +4488,47 @@ async function sendMessage(text) {
   conversation.time = "Now";
   keepOutgoingConversationVisible(conversation);
   moveConversationToTop(currentConversation);
+  writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
   renderMessages();
   renderConversations(searchInput.value);
 
+  const messageData = {
+    clientId: message.clientId,
+    text,
+    senderId: firebaseUser.uid,
+    receiverId: conversation.userId,
+    status: "sent",
+    time: message.time,
+    date: "Today",
+    localCreatedAtMs: message.createdAtMs
+  };
+
+  if (!navigator.onLine) {
+    queueOutgoingMessage(conversation, message, messageData, text, hadChat);
+    writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+    renderMessages();
+    renderConversations(searchInput.value);
+    return;
+  }
+
   try {
     const messageId = await saveOutgoingRemoteMessage(conversation, {
-      text,
-      senderId: firebaseUser.uid,
-      receiverId: conversation.userId,
-      status: "delivered",
-      time: message.time,
-      date: "Today",
-      localCreatedAtMs: message.createdAtMs,
+      ...messageData,
       createdAt: firestoreServerTimestamp()
     }, text, hadChat);
+    removeLocalMessage(firebaseUser.uid, conversation.chatId, message.clientId);
     message.id = messageId;
     writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
     subscribeToMessages(conversation);
   } catch (error) {
     conversation.pendingRemoteChat = false;
+    if (isOfflineSendError(error)) {
+      message.status = "pending";
+      queueOutgoingMessage(conversation, message, messageData, text, hadChat);
+      writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+      renderMessages();
+      return;
+    }
     window.alert("Message send hoy nai. Firebase rules check koro.");
   }
 }
@@ -4348,10 +4718,11 @@ async function sendPhotoAttachment(file = pendingPhotoFile) {
       fileName: file.name,
       time: currentClockTime(),
       date: "Today",
-      status: "sent",
+      status: navigator.onLine ? "sent" : "pending",
       createdAtMs: Date.now(),
       localOrder: Date.now()
     };
+    message.clientId = message.id;
 
     conversation.messages.push(message);
     conversation.messagesLoaded = true;
@@ -4361,28 +4732,51 @@ async function sendPhotoAttachment(file = pendingPhotoFile) {
     keepOutgoingConversationVisible(conversation);
     moveConversationToTop(conversation);
     clearPhotoDraft();
+    writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
     renderMessages();
     renderConversations(searchInput.value);
 
+    const messageData = {
+      clientId: message.clientId,
+      text: "Photo",
+      type: "photo",
+      url,
+      fileName: file.name,
+      senderId: firebaseUser.uid,
+      receiverId: conversation.userId,
+      status: "sent",
+      time: message.time,
+      date: "Today",
+      localCreatedAtMs: message.createdAtMs
+    };
+
+    if (!navigator.onLine) {
+      queueOutgoingMessage(conversation, message, messageData, "Photo", hadChat);
+      writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+      renderMessages();
+      renderConversations(searchInput.value);
+      return;
+    }
+
     try {
       const messageId = await saveOutgoingRemoteMessage(conversation, {
-        text: "Photo",
-        type: "photo",
-        url,
-        fileName: file.name,
-        senderId: firebaseUser.uid,
-        receiverId: conversation.userId,
-        status: "delivered",
-        time: message.time,
-        date: "Today",
-        localCreatedAtMs: message.createdAtMs,
+        ...messageData,
         createdAt: firestoreServerTimestamp()
       }, "Photo", hadChat);
+      removeLocalMessage(firebaseUser.uid, conversation.chatId, message.clientId);
       message.id = messageId;
       writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
       subscribeToMessages(conversation);
     } catch (error) {
       conversation.pendingRemoteChat = false;
+      if (isOfflineSendError(error)) {
+        message.status = "pending";
+        queueOutgoingMessage(conversation, message, messageData, "Photo", hadChat);
+        writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+        renderMessages();
+        renderConversations(searchInput.value);
+        return;
+      }
       conversation.messages = conversation.messages.filter((item) => item.id !== message.id);
       renderMessages();
       renderConversations(searchInput.value);
@@ -4400,6 +4794,12 @@ function formatVoiceDuration(ms) {
   return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+function currentVoiceDurationMs() {
+  if (!voiceStartedAt) return 0;
+  const pausedNow = voiceRecorder?.state === "paused" && voicePausedAt ? Date.now() - voicePausedAt : 0;
+  return Date.now() - voiceStartedAt - voicePausedMs - pausedNow;
+}
+
 function removeVoiceDraftPanel() {
   document.querySelector(".voice-draft")?.remove();
   messageForm.classList.remove("voice-mode", "voice-recording", "voice-ready");
@@ -4413,6 +4813,7 @@ function stopVoiceStream() {
 
 function clearVoiceDraft() {
   const wasRecording = voiceRecorder?.state === "recording";
+  voiceAutoSendAfterStop = false;
   if (wasRecording) {
     voiceDiscarding = true;
     voiceRecorder.stop();
@@ -4422,6 +4823,8 @@ function clearVoiceDraft() {
   voiceChunks = [];
   if (!wasRecording) voiceRecorder = null;
   voiceStartedAt = 0;
+  voicePausedAt = 0;
+  voicePausedMs = 0;
   stopVoiceStream();
   if (pendingVoiceUrl) URL.revokeObjectURL(pendingVoiceUrl);
   pendingVoiceBlob = null;
@@ -4433,15 +4836,11 @@ function clearVoiceDraft() {
 
 function showVoiceDraft(recording = false) {
   removeVoiceDraftPanel();
+  const paused = voiceRecorder?.state === "paused";
   const panel = document.createElement("div");
-  panel.className = `voice-draft${recording ? " recording" : ""}`;
+  panel.className = `voice-draft${recording ? " recording" : ""}${paused ? " paused" : ""}`;
   messageForm.classList.add("voice-mode", recording ? "voice-recording" : "voice-ready");
   messageInput.readOnly = true;
-
-  const status = document.createElement("span");
-  status.className = "voice-draft-status";
-  status.textContent = recording ? `Recording ${formatVoiceDuration(Date.now() - voiceStartedAt)}` : "Voice ready";
-  panel.appendChild(status);
 
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
@@ -4450,22 +4849,79 @@ function showVoiceDraft(recording = false) {
   deleteButton.appendChild(createSvgIcon(iconPaths.trash, "voice-delete-icon"));
   deleteButton.addEventListener("click", clearVoiceDraft);
 
-  if (!recording) {
-    const audio = document.createElement("audio");
-    audio.controls = true;
-    audio.src = pendingVoiceUrl;
-    panel.appendChild(audio);
+  const status = document.createElement("span");
+  status.className = "voice-draft-status";
+  status.textContent = recording ? formatVoiceDuration(currentVoiceDurationMs()) : "Voice ready";
+
+  const wave = document.createElement("span");
+  wave.className = `voice-draft-wave${recording ? " recording" : ""}`;
+  for (let index = 0; index < 22; index += 1) {
+    const bar = document.createElement("span");
+    bar.style.setProperty("--bar", String((index % 5) + 1));
+    wave.appendChild(bar);
   }
-  panel.appendChild(deleteButton);
+
+  if (recording) {
+    const pauseButton = document.createElement("button");
+    pauseButton.type = "button";
+    pauseButton.className = "voice-pause";
+    pauseButton.setAttribute("aria-label", paused ? "Resume voice" : "Pause voice");
+    pauseButton.textContent = paused ? "\u25b6" : "\u275a\u275a";
+    pauseButton.addEventListener("click", toggleVoicePause);
+    const dot = document.createElement("span");
+    dot.className = "voice-record-dot";
+    panel.append(deleteButton, dot, status, wave, pauseButton);
+  } else {
+    const playButton = document.createElement("button");
+    playButton.type = "button";
+    playButton.className = "voice-draft-play";
+    playButton.textContent = "\u25b6";
+    const audio = document.createElement("audio");
+    audio.src = pendingVoiceUrl;
+    audio.addEventListener("play", () => {
+      playButton.textContent = "\u275a\u275a";
+      wave.classList.add("recording");
+    });
+    audio.addEventListener("pause", () => {
+      playButton.textContent = "\u25b6";
+      wave.classList.remove("recording");
+    });
+    audio.addEventListener("ended", () => {
+      playButton.textContent = "\u25b6";
+      wave.classList.remove("recording");
+    });
+    playButton.addEventListener("click", () => {
+      if (audio.paused) audio.play().catch(() => {});
+      else audio.pause();
+    });
+    panel.append(deleteButton, playButton, wave, status, audio);
+  }
 
   messageInputWrap.appendChild(panel);
   updateComposerMode();
 }
 
 function stopVoiceRecording() {
-  if (voiceRecorder?.state === "recording") {
+  if (voiceRecorder?.state === "recording" || voiceRecorder?.state === "paused") {
     voiceRecorder.stop();
   }
+}
+
+function toggleVoicePause() {
+  if (!voiceRecorder || !["recording", "paused"].includes(voiceRecorder.state)) return;
+  if (voiceRecorder.state === "recording") {
+    voiceRecorder.pause();
+    voicePausedAt = Date.now();
+    window.clearInterval(voiceTimer);
+    voiceTimer = null;
+    showVoiceDraft(true);
+    return;
+  }
+  if (voicePausedAt) voicePausedMs += Date.now() - voicePausedAt;
+  voicePausedAt = 0;
+  voiceRecorder.resume();
+  showVoiceDraft(true);
+  voiceTimer = window.setInterval(() => showVoiceDraft(true), 1000);
 }
 
 async function startVoiceRecording() {
@@ -4495,9 +4951,15 @@ async function startVoiceRecording() {
     voiceRecorder.addEventListener("dataavailable", (event) => {
       if (event.data?.size) voiceChunks.push(event.data);
     });
+    voiceRecorder.addEventListener("pause", () => showVoiceDraft(true));
+    voiceRecorder.addEventListener("resume", () => showVoiceDraft(true));
     voiceRecorder.addEventListener("stop", () => {
       window.clearInterval(voiceTimer);
       voiceTimer = null;
+      if (voicePausedAt) {
+        voicePausedMs += Date.now() - voicePausedAt;
+        voicePausedAt = 0;
+      }
       stopVoiceStream();
       voiceButton.classList.remove("recording");
       if (voiceDiscarding) {
@@ -4512,8 +4974,14 @@ async function startVoiceRecording() {
       pendingVoiceUrl = URL.createObjectURL(pendingVoiceBlob);
       voiceRecorder = null;
       showVoiceDraft(false);
+      if (voiceAutoSendAfterStop) {
+        voiceAutoSendAfterStop = false;
+        sendVoiceMessage();
+      }
     });
     voiceStartedAt = Date.now();
+    voicePausedAt = 0;
+    voicePausedMs = 0;
     voiceRecorder.start();
     voiceButton.classList.add("recording");
     showVoiceDraft(true);
@@ -4527,6 +4995,7 @@ async function startVoiceRecording() {
 async function sendVoiceMessage() {
   const conversation = currentConversation;
   if (!pendingVoiceBlob || !firebaseUser || !conversation?.userId) return;
+  let queuedVoice = null;
   try {
     const { hadChat } = prepareOutgoingConversation(conversation);
     const url = await readFileAsDataUrl(pendingVoiceBlob);
@@ -4541,10 +5010,11 @@ async function sendVoiceMessage() {
       fileName: `Voice ${duration}`,
       time: currentClockTime(),
       date: "Today",
-      status: "sent",
+      status: navigator.onLine ? "sent" : "pending",
       createdAtMs: Date.now(),
       localOrder: Date.now()
     };
+    message.clientId = message.id;
 
     conversation.messages.push(message);
     conversation.messagesLoaded = true;
@@ -4553,27 +5023,53 @@ async function sendVoiceMessage() {
     conversation.time = "Now";
     keepOutgoingConversationVisible(conversation);
     moveConversationToTop(conversation);
+    writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
     renderMessages();
     renderConversations(searchInput.value);
 
-    const messageId = await saveOutgoingRemoteMessage(conversation, {
+    const messageData = {
+      clientId: message.clientId,
       text: "Voice",
       type: "voice",
       url,
       fileName: message.fileName,
       senderId: firebaseUser.uid,
       receiverId: conversation.userId,
-      status: "delivered",
+      status: "sent",
       time: message.time,
       date: "Today",
-      localCreatedAtMs: message.createdAtMs,
+      localCreatedAtMs: message.createdAtMs
+    };
+    queuedVoice = { conversation, message, messageData, hadChat };
+
+    if (!navigator.onLine) {
+      queueOutgoingMessage(conversation, message, messageData, "Voice", hadChat);
+      writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+      clearVoiceDraft();
+      renderMessages();
+      renderConversations(searchInput.value);
+      return;
+    }
+
+    const messageId = await saveOutgoingRemoteMessage(conversation, {
+      ...messageData,
       createdAt: firestoreServerTimestamp()
     }, "Voice", hadChat);
+    removeLocalMessage(firebaseUser.uid, conversation.chatId, message.clientId);
     message.id = messageId;
     writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
     clearVoiceDraft();
     subscribeToMessages(conversation);
   } catch (error) {
+    if (queuedVoice?.conversation?.chatId && isOfflineSendError(error)) {
+      queuedVoice.message.status = "pending";
+      queueOutgoingMessage(queuedVoice.conversation, queuedVoice.message, queuedVoice.messageData, "Voice", queuedVoice.hadChat);
+      writeLocalMessages(firebaseUser.uid, queuedVoice.conversation.chatId, queuedVoice.conversation.messages);
+      clearVoiceDraft();
+      renderMessages();
+      renderConversations(searchInput.value);
+      return;
+    }
     window.alert("Voice send hoy nai. Abar try koro.");
   }
 }
@@ -4730,9 +5226,9 @@ function changeProfilePhoto() {
   const reader = new FileReader();
   reader.addEventListener("load", () => {
     const url = reader.result;
-    profilePhoto.src = url;
+    setImageAfterLoad(profilePhoto, url, myProfile.name || "Profile");
     myProfile.avatar = url;
-    profileButton.querySelector("img").src = url;
+    setImageAfterLoad(profileButton.querySelector("img"), url, myProfile.name || "Profile");
     profilePhotoInput.value = "";
     persistCurrentUserProfile();
   });
@@ -4925,9 +5421,9 @@ friendsCloseButton.addEventListener("click", closeAllFriends);
 friendProfileCloseButton.addEventListener("click", closeFriendProfile);
 friendProfileNumber.closest("button")?.addEventListener("click", copyFriendProfileNumber);
 friendProfileMessageButton.addEventListener("click", messageActiveFriendProfile);
-friendProfileReportButton.addEventListener("click", reportActiveFriend);
 friendProfileBlockButton.addEventListener("click", blockActiveFriend);
 friendProfileVerifyButton.addEventListener("click", toggleActiveFriendVerification);
+friendProfileRestrictButton.addEventListener("click", toggleActiveFriendRestriction);
 friendProfilePasswordButton.addEventListener("click", () => {
   if (!activeFriendProfile || !isAdminAccount()) return;
   changeAdminUserPassword({
@@ -5077,9 +5573,12 @@ document.addEventListener("visibilitychange", () => {
   }
 });
 
+window.addEventListener("online", flushOutgoingQueue);
+
 messageForm.addEventListener("submit", (event) => {
   event.preventDefault();
   if (voiceRecorder?.state === "recording") {
+    voiceAutoSendAfterStop = true;
     stopVoiceRecording();
     return;
   }
@@ -5130,6 +5629,7 @@ renderConversations();
 messages.innerHTML = "";
 
 setupPasswordToggles();
+registerServiceWorker();
 
 if (desktopQuery.matches && !phoneShell.classList.contains("auth-pending")) {
   chatScreen.classList.add("active");

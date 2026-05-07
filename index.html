@@ -77,7 +77,7 @@
 
         <section class="signup-complete" id="signupComplete" aria-hidden="true">
           <button class="signup-photo-button" id="signupPhotoButton" type="button" aria-label="Add profile photo">
-            <img id="signupCompletePhoto" src="" alt="">
+            <img id="signupCompletePhoto" alt="">
             <span>Photo</span>
           </button>
           <strong id="signupCompleteName"></strong>
@@ -92,7 +92,7 @@
     <section class="screen active" id="homeScreen">
       <header class="home-header">
         <button class="avatar-button" id="profileButton" type="button" aria-label="Profile">
-          <img src="" alt="">
+          <img alt="">
         </button>
         <h1><span>W</span><small>eb</small><span>C</span><small>hat</small></h1>
         <div class="header-actions">
@@ -133,7 +133,7 @@
       <header class="chat-header">
         <button class="back-button" id="backButton" type="button" aria-label="Back to chats">&lt;</button>
         <span class="chat-avatar-wrap" id="chatAvatarWrap">
-          <img id="chatAvatar" class="chat-avatar" src="" alt="">
+          <img id="chatAvatar" class="chat-avatar" alt="">
         </span>
         <div class="chat-title">
           <h2 id="chatName"></h2>
@@ -209,12 +209,12 @@
 
         <section class="profile-hero">
           <div class="profile-photo-wrap">
-            <img class="profile-photo" id="profilePhoto" src="https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=260&q=80" alt="">
+            <img class="profile-photo" id="profilePhoto" alt="">
             <button class="photo-edit-button" id="profilePhotoButton" type="button" aria-label="Change profile photo"></button>
             <input class="hidden-input" id="profilePhotoInput" type="file" accept="image/*">
           </div>
           <h3 class="profile-name-row">
-            <span id="profileName">Sihab Ahmed</span>
+            <span id="profileName"></span>
             <input class="profile-name-input" id="profileNameInput" type="text" aria-label="Profile name">
             <button class="name-edit-button" id="profileNameButton" type="button" aria-label="Change profile name"></button>
           </h3>
@@ -224,15 +224,15 @@
         <section class="profile-details" aria-label="Profile details">
           <button type="button" data-profile-field="bio">
             <span>Bio</span>
-            <strong id="profileBio">Building a clean chat app</strong>
+            <strong id="profileBio"></strong>
           </button>
           <button type="button" data-profile-field="username">
             <span>Username</span>
-            <strong id="profileUsername">@sihab.chat</strong>
+            <strong id="profileUsername"></strong>
           </button>
           <button type="button" data-profile-field="number">
             <span>Number</span>
-            <strong id="profileNumber">+880 1712-345678</strong>
+            <strong id="profileNumber"></strong>
           </button>
           <button type="button" data-password-action="change">
             <span>Password</span>
@@ -272,7 +272,7 @@
 
         <section class="profile-hero">
           <span class="friend-photo-wrap" id="friendPhotoWrap">
-            <img class="profile-photo" id="friendProfilePhoto" src="" alt="">
+            <img class="profile-photo" id="friendProfilePhoto" alt="">
           </span>
           <h3 class="profile-name-row">
             <span id="friendProfileName"></span>
@@ -297,9 +297,9 @@
 
         <div class="friend-profile-actions">
           <button class="friend-message-button" id="friendProfileMessageButton" type="button">Message</button>
-          <button class="friend-report-button" id="friendProfileReportButton" type="button">Report user</button>
           <button class="friend-block-button" id="friendProfileBlockButton" type="button">Block user</button>
           <button class="friend-verify-button" id="friendProfileVerifyButton" type="button">Verify user</button>
+          <button class="friend-restrict-button" id="friendProfileRestrictButton" type="button">Restrict user</button>
           <button class="friend-password-button" id="friendProfilePasswordButton" type="button">Change password</button>
           <button class="friend-delete-button" id="friendProfileDeleteButton" type="button">Delete user</button>
         </div>
