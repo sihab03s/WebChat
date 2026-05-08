@@ -225,6 +225,8 @@ const chatName = document.querySelector("#chatName");
 const chatStatus = document.querySelector("#chatStatus");
 const chatAvatar = document.querySelector("#chatAvatar");
 const chatAvatarWrap = document.querySelector("#chatAvatarWrap");
+const jumpBottomButton = document.querySelector("#jumpBottomButton");
+const jumpBottomCount = document.querySelector("#jumpBottomCount");
 const adminUsersButton = document.querySelector("#adminUsersButton");
 const adminUsersOverlay = document.querySelector("#adminUsersOverlay");
 const adminUsersCloseButton = document.querySelector("#adminUsersCloseButton");
@@ -238,6 +240,9 @@ const homeOptionsMenu = document.querySelector("#homeOptionsMenu");
 const showArchivedButton = document.querySelector("#showArchivedButton");
 const showBlockedButton = document.querySelector("#showBlockedButton");
 const addUserButton = document.querySelector("#addUserButton");
+const fabActions = document.querySelector("#fabActions");
+const fabGroupButton = document.querySelector("#fabGroupButton");
+const fabFriendButton = document.querySelector("#fabFriendButton");
 const userFinderPanel = document.querySelector("#userFinderPanel");
 const userSearchNumber = document.querySelector("#userSearchNumber");
 const userSearchButton = document.querySelector("#userSearchButton");
@@ -251,6 +256,10 @@ const backButton = document.querySelector("#backButton");
 const messageForm = document.querySelector("#messageForm");
 const messageInput = document.querySelector("#messageInput");
 const messageInputWrap = document.querySelector(".message-input-wrap");
+const replyPreview = document.querySelector("#replyPreview");
+const replyPreviewName = document.querySelector("#replyPreviewName");
+const replyPreviewText = document.querySelector("#replyPreviewText");
+const replyCancelButton = document.querySelector("#replyCancelButton");
 const emojiButton = document.querySelector("#emojiButton");
 const emojiMenu = document.querySelector("#emojiMenu");
 const attachmentButton = document.querySelector("#attachmentButton");
@@ -297,6 +306,9 @@ const friendProfileStatus = document.querySelector("#friendProfileStatus");
 const friendProfileBio = document.querySelector("#friendProfileBio");
 const friendProfileUsername = document.querySelector("#friendProfileUsername");
 const friendProfileNumber = document.querySelector("#friendProfileNumber");
+const groupMembersSection = document.querySelector("#groupMembersSection");
+const groupMembersList = document.querySelector("#groupMembersList");
+const groupMembersSeeMoreButton = document.querySelector("#groupMembersSeeMoreButton");
 const friendProfileMessageButton = document.querySelector("#friendProfileMessageButton");
 const friendProfileBlockButton = document.querySelector("#friendProfileBlockButton");
 const friendProfileVerifyButton = document.querySelector("#friendProfileVerifyButton");
@@ -321,6 +333,9 @@ let longPressTriggered = false;
 let conversationHoldTimer;
 let pendingConversationPress = null;
 let lastConversationPointerOpenAt = 0;
+let lastConversationOpenId = null;
+let suppressConversationClickUntil = 0;
+let suppressConversationRenderUntil = 0;
 let activeConversationMenu;
 let activeConversationMenuAnchor = null;
 let activeConfirmDialog = null;
@@ -344,6 +359,10 @@ let presenceRefreshTimer = null;
 let restoredUiState = false;
 let chatHistoryActive = false;
 let handlingHistoryPop = false;
+let allowBrowserBackExit = false;
+let appBackTrapReady = false;
+let homeBackPrimed = false;
+let homeBackPrimeTimer = null;
 let creatingSignupAccount = false;
 let resettingPasswordAccount = false;
 let pendingSignupProfile = null;
@@ -366,12 +385,16 @@ let voiceMimeType = "audio/webm";
 let voiceAutoSendAfterStop = false;
 let pendingPhotoFile = null;
 let pendingPhotoUrl = "";
+let activeReplyMessage = null;
+let replySwipeStart = null;
 const lastNotificationKeys = new Map();
 const presenceStatusCache = new Map();
 const listPresenceUnsubscribers = new Map();
 const listPresenceTimers = new Map();
 const deliveredAckCache = new Map();
 let outgoingQueueSyncing = false;
+let forceMessagesScrollBottom = false;
+let jumpBottomUnread = 0;
 
 const authUsersKey = "webchatUsers";
 const authSessionKey = "webchatCurrentUser";
@@ -486,6 +509,10 @@ function chatIdFor(uidA, uidB) {
   return [uidA, uidB].sort().join("_");
 }
 
+function groupId() {
+  return `group_${firebaseUser?.uid || "local"}_${Date.now()}`;
+}
+
 function currentClockTime() {
   return new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
@@ -537,6 +564,35 @@ function userToConversation(user, chatId = null, chatData = {}) {
     number: profile.number || user.number,
     restricted: !!profile.restricted,
     verified: !!profile.verified,
+    muted: false,
+    messages: [],
+    remote: true
+  };
+}
+
+function groupToConversation(chatId, data = {}) {
+  const name = data.groupName || data.name || "New group";
+  const participants = Array.isArray(data.participants) ? data.participants : [];
+  const admins = Array.isArray(data.admins) && data.admins.length ? data.admins : [data.adminId].filter(Boolean);
+  return {
+    id: chatId,
+    chatId,
+    isGroup: true,
+    adminId: data.adminId || "",
+    admins,
+    participants,
+    memberIds: participants,
+    userId: "",
+    name,
+    status: `${Math.max(participants.length, 1)} members`,
+    avatar: data.avatar || defaultAvatar,
+    time: data.lastTime || "Now",
+    unread: 0,
+    bio: "Group chat",
+    username: "@group.webchat",
+    number: "",
+    restricted: false,
+    verified: false,
     muted: false,
     messages: [],
     remote: true
@@ -786,7 +842,8 @@ async function reserveAdminCode(adminCode, number) {
     transaction.update(codeRef, {
       used: true,
       usedAt: firestoreServerTimestamp(),
-      usedByNumber: number
+      usedByNumber: number,
+      useType: "signup"
     });
   });
 }
@@ -1403,7 +1460,8 @@ async function resetPasswordWithAdminCode({ number, password, confirmPassword, a
     await setDoc(doc(db, "numbers", numberDocId(number)), { uid: newUid, number, authEmail, email: authEmail }, { merge: true });
     await migrateUserIdentity(oldUid, newUid);
     await setDoc(doc(db, "signupCodes", adminCode), {
-      usedByUid: newUid
+      usedByUid: newUid,
+      useType: "passwordForget"
     }, { merge: true });
     resettingPasswordAccount = false;
     firebaseUser = credential.user;
@@ -1428,6 +1486,7 @@ function completeLogin(user) {
   const manualLogin = loginSubmitButton.classList.contains("loading");
   setAuthLoading(loginSubmitButton, false);
   setAuthLoading(signupSubmitButton, false);
+  ensureAppBackTrap();
   startOnHomeAfterLogin = manualLogin;
   restoredUiState = manualLogin;
   applyUserProfile(user);
@@ -1542,6 +1601,11 @@ function resetSessionView(showLogin = false) {
   restoredUiState = false;
   chatHistoryActive = false;
   handlingHistoryPop = false;
+  allowBrowserBackExit = false;
+  appBackTrapReady = false;
+  homeBackPrimed = false;
+  window.clearTimeout(homeBackPrimeTimer);
+  homeBackPrimeTimer = null;
   currentUser = null;
   firebaseUser = null;
   Object.assign(myProfile, {
@@ -1679,7 +1743,8 @@ async function handleSignup(event) {
     const credential = await createUserWithEmailAndPassword(auth, authEmail, authPassword(password));
     const profile = await createUserProfileDocument(credential, number, name, authEmail);
     await setDoc(doc(db, "signupCodes", adminCode), {
-      usedByUid: credential.user.uid
+      usedByUid: credential.user.uid,
+      useType: "signup"
     }, { merge: true });
     setAuthLoading(signupSubmitButton, false);
     pendingSignupLogin = { number, password };
@@ -1807,15 +1872,19 @@ function setupPresence(uid) {
 }
 
 function applyPresenceStatus(userId, nextStatus) {
+  const previousStatus = presenceStatusCache.get(userId);
+  let changed = previousStatus !== nextStatus;
   presenceStatusCache.set(userId, nextStatus);
   conversations.forEach((item) => {
-    if (item.userId === userId) item.status = nextStatus;
+    if (item.userId !== userId || item.status === nextStatus) return;
+    item.status = nextStatus;
+    changed = true;
   });
-  if (currentConversation?.userId === userId) {
+  if (currentConversation?.userId === userId && currentConversation.status !== nextStatus) {
     currentConversation.status = nextStatus;
     renderMessages();
   }
-  renderConversations(searchInput.value);
+  if (changed) renderConversations(searchInput.value);
 }
 
 function schedulePresenceRefresh(userId, value) {
@@ -1869,7 +1938,7 @@ function clearListPresenceSubscriptions() {
 }
 
 function syncListPresenceSubscriptions(rows) {
-  const nextUserIds = new Set(rows.map((row) => row.userId).filter(Boolean));
+  const nextUserIds = new Set(rows.filter((row) => !row.isGroup).map((row) => row.userId).filter(Boolean));
   listPresenceUnsubscribers.forEach((unsubscribe, userId) => {
     if (nextUserIds.has(userId)) return;
     unsubscribe();
@@ -1913,6 +1982,31 @@ async function subscribeToMyChats() {
     const rows = await Promise.all(snapshot.docs.map(async (chatDoc) => {
       const data = chatDoc.data();
       if (data.hiddenBy?.[ownerUid]) return null;
+      if (data.type === "group") {
+        const updatedAt = Math.max(data.updatedAt?.toMillis?.() || 0, localConversationOrder.get(chatDoc.id) || 0);
+        const localLast = readLocalMessages(ownerUid, chatDoc.id).at(-1);
+        const remoteLastMessage = data.hiddenLastBy?.[ownerUid]?.text || data.lastMessage || "";
+        const remoteLastSender = data.hiddenLastBy?.[ownerUid]?.senderId ?? data.lastSenderId ?? "";
+        const isOpenChat = currentConversation?.chatId === chatDoc.id;
+        const hiddenAt = hiddenLocal[chatDoc.id] || 0;
+        if (hiddenAt && (remoteLastSender === ownerUid || !updatedAt || updatedAt <= hiddenAt)) return null;
+        if (hiddenAt && remoteLastSender !== ownerUid && updatedAt > hiddenAt) showConversationLocally(ownerUid, chatDoc.id);
+        return {
+          ...groupToConversation(chatDoc.id, data),
+          messages: [],
+          messagesLoaded: false,
+          lastMessage: localLast?.text || remoteLastMessage,
+          lastSenderId: remoteLastSender,
+          seenBy: data.seenBy || {},
+          deliveredBy: data.deliveredBy || {},
+          reactionsByMessage: data.reactionsByMessage || {},
+          pinned: !!data.pinnedBy?.[ownerUid],
+          pinnedAt: data.pinnedAtBy?.[ownerUid] || 0,
+          unread: isOpenChat ? 0 : data.unreadBy?.[ownerUid] || 0,
+          muted: !!data.mutedBy?.[ownerUid],
+          updatedAt
+        };
+      }
       const otherUid = data.participants.find((uid) => uid !== ownerUid);
       const userSnapshot = await getDoc(doc(db, "users", otherUid));
       if (!userSnapshot.exists()) return null;
@@ -1983,6 +2077,13 @@ async function subscribeToMyChats() {
           unread: 0,
           lastMessage: currentConversation.lastMessage || updatedCurrent.lastMessage,
           lastSenderId: currentConversation.lastSenderId || updatedCurrent.lastSenderId,
+          name: updatedCurrent.name || currentConversation.name,
+          status: updatedCurrent.status || currentConversation.status,
+          isGroup: !!updatedCurrent.isGroup,
+          adminId: updatedCurrent.adminId || currentConversation.adminId,
+          admins: updatedCurrent.admins || currentConversation.admins,
+          participants: updatedCurrent.participants || currentConversation.participants,
+          memberIds: updatedCurrent.memberIds || currentConversation.memberIds,
           reactionsByMessage: updatedCurrent.reactionsByMessage || currentConversation.reactionsByMessage || {}
         });
         applySeenState(currentConversation);
@@ -1992,13 +2093,14 @@ async function subscribeToMyChats() {
       }
     }
     if (!currentConversation) {
-      messages.innerHTML = "";
-      chatName.textContent = "";
-      chatStatus.textContent = "";
-      chatAvatar.removeAttribute("src");
-      chatAvatar.alt = "";
-      chatAvatarWrap.classList.remove("active", "offline");
-    }
+    messages.innerHTML = "";
+    chatName.textContent = "";
+    chatStatus.textContent = "";
+    chatAvatar.removeAttribute("src");
+    chatAvatar.alt = "";
+    chatAvatarWrap.classList.remove("active", "offline");
+    updateJumpBottomButton();
+  }
     updateChatEmptyState();
     renderConversations(searchInput.value);
     restoreUiState();
@@ -2015,6 +2117,10 @@ function subscribeToMessages(conversation) {
   const messagesQuery = query(collection(db, "chats", chatId, "messages"), orderBy("createdAt"));
   unsubscribeMessages = onSnapshot(messagesQuery, async (snapshot) => {
     if (activeMessageChatId !== chatId || currentConversation?.chatId !== chatId || firebaseUser?.uid !== ownerUid) return;
+    const wasAwayFromBottom = !isMessagesNearBottom(140);
+    const previousIncomingIds = new Set((conversation.messages || [])
+      .filter((message) => message.from === "them")
+      .map((message) => message.id));
     const hiddenIds = new Set();
     const remoteMessages = (await Promise.all(snapshot.docs
       .map(async (messageDoc, index) => {
@@ -2030,6 +2136,10 @@ function subscribeToMessages(conversation) {
     conversation.messages = pendingLocalClears.has(localMessagesKey(ownerUid, chatId))
       ? []
       : mergeLocalMessages(ownerUid, chatId, remoteMessages, hiddenIds);
+    const newIncomingCount = conversation.messages.filter((message) => {
+      return message.from === "them" && !previousIncomingIds.has(message.id);
+    }).length;
+    if (wasAwayFromBottom && newIncomingCount) jumpBottomUnread += newIncomingCount;
     applySeenState(conversation);
     applyDeliveryState(conversation);
     applyConversationReactions(conversation);
@@ -2226,6 +2336,7 @@ async function normalizeMessageDoc(messageDoc, ownerUid, index = 0, chatId = "")
     time: data.time || "Now",
     date: data.date || "Today",
     status: data.status || "sent",
+    replyTo: data.replyTo || null,
     reaction: data.reaction || "",
     createdAtMs,
     localOrder: createdAtMs || index
@@ -2354,6 +2465,43 @@ function applyConversationReactions(conversation) {
   });
 }
 
+function replySnippet(message) {
+  if (!message) return "";
+  if (message.type === "photo") return "Photo";
+  if (message.type === "voice") return "Voice";
+  return String(message.text || "").slice(0, 120);
+}
+
+function setReplyMessage(message) {
+  if (!message) return;
+  activeReplyMessage = {
+    id: message.id,
+    from: message.from,
+    senderId: message.senderId || (message.from === "me" ? firebaseUser?.uid : currentConversation?.userId),
+    name: message.from === "me" ? "You" : currentConversation?.name || "User",
+    text: replySnippet(message),
+    type: message.type || "text"
+  };
+  updateReplyPreview();
+  messageInput.focus();
+}
+
+function clearReplyMessage() {
+  activeReplyMessage = null;
+  updateReplyPreview();
+}
+
+function updateReplyPreview() {
+  if (!replyPreview) return;
+  replyPreview.classList.toggle("hidden", !activeReplyMessage);
+  replyPreviewName.textContent = activeReplyMessage?.name || "";
+  replyPreviewText.textContent = activeReplyMessage?.text || "";
+}
+
+function attachReply(message) {
+  return activeReplyMessage ? { ...activeReplyMessage } : null;
+}
+
 function setLocalMessageReaction(conversation, message, reactionValue) {
   if (!conversation || !message || !firebaseUser) return;
   conversation.reactionsByMessage = conversation.reactionsByMessage || {};
@@ -2473,7 +2621,7 @@ function subscribeToPresence(conversation) {
   window.clearTimeout(presenceRefreshTimer);
   presenceRefreshTimer = null;
   activePresenceUserId = conversation?.userId || null;
-  if (!conversation?.userId) return;
+  if (!conversation?.userId || conversation?.isGroup) return;
 
   const userId = conversation.userId;
   unsubscribePresence = onValue(ref(realtimeDb, `status/${userId}`), (snapshot) => {
@@ -2564,6 +2712,11 @@ function ensureMessageData() {
 }
 
 function renderConversations(filter = "") {
+  if (Date.now() < suppressConversationRenderUntil) {
+    refreshConversationRowsState();
+    return;
+  }
+
   const query = filter.trim().toLowerCase();
   chatList.innerHTML = "";
   renderStories();
@@ -2575,10 +2728,9 @@ function renderConversations(filter = "") {
       return haystack.includes(query);
     })
     .forEach((conversation) => {
-      const button = document.createElement("article");
+      const button = document.createElement("button");
+      button.type = "button";
       button.className = `conversation${conversation.id === currentConversation?.id ? " selected" : ""}${conversation.unread ? " unread" : ""}`;
-      button.setAttribute("role", "button");
-      button.setAttribute("tabindex", "0");
       button.dataset.conversationId = conversation.id;
 
       const avatar = document.createElement("img");
@@ -2635,13 +2787,30 @@ function renderConversations(filter = "") {
       }
 
       button.append(avatarWrap, text, meta);
-      button.addEventListener("keydown", (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        openConversation(conversation.id);
-      });
       chatList.appendChild(button);
     });
+}
+
+function refreshConversationRowsState() {
+  chatList.querySelectorAll(".conversation").forEach((row) => {
+    const conversation = conversationFromElement(row);
+    if (!conversation) return;
+    row.classList.toggle("selected", conversation.id === currentConversation?.id);
+    row.classList.toggle("unread", !!conversation.unread);
+    const meta = row.querySelector(".conversation-meta");
+    if (!meta) return;
+    meta.replaceChildren();
+    if (conversation.unread) {
+      const dot = document.createElement("span");
+      dot.className = "unread-dot";
+      dot.setAttribute("aria-label", `${conversation.unread} unread messages`);
+      meta.appendChild(dot);
+    } else {
+      const time = document.createElement("time");
+      time.textContent = conversation.time;
+      meta.appendChild(time);
+    }
+  });
 }
 
 function conversationFromElement(element) {
@@ -2652,11 +2821,15 @@ function conversationFromElement(element) {
 
 function openConversationFromPress(conversationId) {
   if (!conversationId) return;
+  const now = Date.now();
+  if (lastConversationOpenId === conversationId && now - lastConversationPointerOpenAt < 350) return;
+  if (currentConversation?.id === conversationId && chatScreen.classList.contains("active")) return;
   const exists = conversations.some((conversation) => conversation.id === conversationId);
   if (!exists) return;
   closeConversationMenu();
   openConversation(conversationId);
-  lastConversationPointerOpenAt = Date.now();
+  lastConversationOpenId = conversationId;
+  lastConversationPointerOpenAt = now;
 }
 
 function openConversationProfileFromPress(conversationId) {
@@ -2669,6 +2842,7 @@ function openConversationProfileFromPress(conversationId) {
 
 chatList.addEventListener("pointerdown", (event) => {
   if (event.button && event.button !== 0) return;
+  if (event.pointerType === "mouse") return;
   const row = event.target.closest(".conversation");
   const conversation = conversationFromElement(event.target);
   if (!row || !conversation) return;
@@ -2689,25 +2863,21 @@ chatList.addEventListener("pointerdown", (event) => {
   }, 520);
 });
 
+chatList.addEventListener("pointermove", (event) => {
+  if (!pendingConversationPress) return;
+  const moved = Math.hypot(event.clientX - pendingConversationPress.x, event.clientY - pendingConversationPress.y);
+  if (moved <= 10) return;
+  pendingConversationPress = null;
+  window.clearTimeout(conversationHoldTimer);
+  longPressTriggered = false;
+});
+
 document.addEventListener("pointerup", (event) => {
   if (!pendingConversationPress) return;
 
-  const press = pendingConversationPress;
   pendingConversationPress = null;
   window.clearTimeout(conversationHoldTimer);
-
-  const moved = Math.hypot(event.clientX - press.x, event.clientY - press.y);
-  const wasHoldMenuClick = longPressTriggered && Date.now() - menuOpenedAt < 700;
   longPressTriggered = false;
-  if (wasHoldMenuClick || moved > 10) return;
-
-  event.preventDefault();
-  event.stopPropagation();
-  if (press.profileTarget) {
-    openConversationProfileFromPress(press.id);
-  } else {
-    openConversationFromPress(press.id);
-  }
 }, true);
 
 document.addEventListener("pointercancel", () => {
@@ -2718,21 +2888,20 @@ document.addEventListener("pointercancel", () => {
 
 chatList.addEventListener("click", (event) => {
   const row = event.target.closest(".conversation");
-  if (row) {
-    event.preventDefault();
-    event.stopPropagation();
-    if (activeConversationMenu && Date.now() - menuOpenedAt < 700) return;
-    if (Date.now() - lastConversationPointerOpenAt > 500) {
-      if (event.target.closest(".conversation-avatar-wrap")) {
-        openConversationProfileFromPress(row.dataset.conversationId);
-      } else {
-        openConversationFromPress(row.dataset.conversationId);
-      }
-    }
+  if (!row) {
+    clearDesktopConversationSelection();
     return;
   }
-  clearDesktopConversationSelection();
-}, true);
+  event.preventDefault();
+  event.stopPropagation();
+  if (longPressTriggered || (activeConversationMenu && Date.now() - menuOpenedAt < 700)) return;
+  closeConversationMenu();
+  if (event.target.closest(".conversation-avatar-wrap")) {
+    openConversationProfileFromPress(row.dataset.conversationId);
+  } else {
+    openConversationFromPress(row.dataset.conversationId);
+  }
+});
 
 function renderStories() {
   if (!storyRow) return;
@@ -3017,7 +3186,176 @@ function closeHomeOptions() {
   homeOptionsMenu.setAttribute("aria-hidden", "true");
 }
 
+function toggleFabActions() {
+  const isOpen = fabActions.classList.toggle("active");
+  fabActions.setAttribute("aria-hidden", String(!isOpen));
+  addUserButton.classList.toggle("active", isOpen);
+  if (isOpen) {
+    closeHomeOptions();
+    closeUserFinder();
+  }
+}
+
+function closeFabActions() {
+  fabActions.classList.remove("active");
+  fabActions.setAttribute("aria-hidden", "true");
+  addUserButton.classList.remove("active");
+}
+
+function friendRowsForGroup() {
+  const seen = new Set();
+  return conversations.filter((conversation) => {
+    if (conversation.isGroup || !conversation.userId || conversation.blocked) return false;
+    if (seen.has(conversation.userId)) return false;
+    seen.add(conversation.userId);
+    return true;
+  });
+}
+
+async function saveGroupMembers(group, name, memberIds) {
+  const participants = Array.from(new Set([firebaseUser.uid, ...memberIds]));
+  const chatId = group?.chatId || groupId();
+  const admins = group?.admins?.length ? group.admins : [group?.adminId || firebaseUser.uid];
+  const payload = {
+    type: "group",
+    groupName: name,
+    adminId: group?.adminId || firebaseUser.uid,
+    admins,
+    participants,
+    lastTime: group?.time || "Now",
+    updatedAt: firestoreServerTimestamp(),
+    createdAt: group?.chatId ? group.createdAt || firestoreServerTimestamp() : firestoreServerTimestamp()
+  };
+  await setDoc(doc(db, "chats", chatId), payload, { merge: true });
+  return { chatId, participants, payload };
+}
+
+function openAddGroup(group = currentConversation?.isGroup ? currentConversation : null) {
+  closeFabActions();
+  closeHomeOptions();
+  closeChatOptions();
+  if (!firebaseUser) return;
+  if (group && group.adminId && group.adminId !== firebaseUser.uid) {
+    window.alert("Only group admin members add/remove korte parbe.");
+    return;
+  }
+
+  const friends = friendRowsForGroup();
+  if (!friends.length) {
+    window.alert("Group create korte age friend add koro.");
+    return;
+  }
+
+  const overlay = document.createElement("section");
+  overlay.className = "confirm-overlay group-overlay active";
+  overlay.setAttribute("aria-hidden", "false");
+
+  const dialog = document.createElement("article");
+  dialog.className = "confirm-dialog group-dialog";
+  dialog.addEventListener("click", (event) => event.stopPropagation());
+
+  const heading = document.createElement("h3");
+  heading.textContent = group ? "Manage group" : "Add group";
+
+  const nameLabel = document.createElement("label");
+  const nameText = document.createElement("span");
+  nameText.textContent = "Group name";
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.placeholder = "Group name";
+  nameInput.value = group?.name || "";
+  nameLabel.append(nameText, nameInput);
+
+  const memberTitle = document.createElement("strong");
+  memberTitle.textContent = "Friends";
+
+  const members = document.createElement("div");
+  members.className = "group-member-list";
+  const currentMembers = new Set(group?.participants || group?.memberIds || []);
+  friends.forEach((friend) => {
+    const row = document.createElement("label");
+    row.className = "group-member-row";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = friend.userId;
+    input.checked = !group || currentMembers.has(friend.userId);
+    const avatar = document.createElement("img");
+    avatar.src = friend.avatar;
+    avatar.alt = "";
+    const name = document.createElement("span");
+    name.textContent = friend.name;
+    row.append(input, avatar, name);
+    members.appendChild(row);
+  });
+
+  const message = document.createElement("p");
+  message.className = "group-dialog-message";
+
+  const actions = document.createElement("div");
+  actions.className = "confirm-actions";
+  const cancelButton = document.createElement("button");
+  cancelButton.type = "button";
+  cancelButton.textContent = "Cancel";
+  const saveButton = document.createElement("button");
+  saveButton.type = "button";
+  saveButton.textContent = group ? "Save" : "Create";
+  saveButton.className = "confirm-primary";
+
+  const close = () => {
+    overlay.remove();
+    activeConfirmDialog = null;
+  };
+  cancelButton.addEventListener("click", close);
+  overlay.addEventListener("click", close);
+  saveButton.addEventListener("click", async () => {
+    const name = nameInput.value.trim() || "New group";
+    const selected = [...members.querySelectorAll("input:checked")].map((input) => input.value);
+    if (!selected.length) {
+      message.textContent = "Minimum 1 friend select koro.";
+      return;
+    }
+    setAuthLoading(saveButton, true);
+    try {
+      const result = await saveGroupMembers(group, name, selected);
+      const conversation = group || groupToConversation(result.chatId, result.payload);
+      Object.assign(conversation, {
+        id: result.chatId,
+        chatId: result.chatId,
+        isGroup: true,
+        name,
+        adminId: result.payload.adminId,
+        admins: result.payload.admins,
+        participants: result.participants,
+        memberIds: result.participants,
+        status: `${result.participants.length} members`,
+        avatar: defaultAvatar,
+        messages: group?.messages || [],
+        messagesLoaded: !!group?.messagesLoaded,
+        lastMessage: group?.lastMessage || "",
+        time: "Now"
+      });
+      if (!conversations.some((item) => item.id === conversation.id)) conversations.unshift(conversation);
+      close();
+      renderConversations(searchInput.value);
+      openConversation(conversation.id);
+    } catch (error) {
+      message.textContent = error.message || "Group save hoy nai";
+    } finally {
+      setAuthLoading(saveButton, false);
+    }
+  });
+
+  actions.append(cancelButton, saveButton);
+  dialog.append(heading, nameLabel, memberTitle, members, message, actions);
+  overlay.appendChild(dialog);
+  phoneShell.appendChild(overlay);
+  activeConfirmDialog = overlay;
+  confirmOpenedAt = Date.now();
+  nameInput.focus();
+}
+
 function toggleUserFinder() {
+  closeFabActions();
   const isOpen = userFinderPanel.classList.toggle("active");
   userFinderPanel.setAttribute("aria-hidden", String(!isOpen));
   if (isOpen) {
@@ -3078,6 +3416,7 @@ function isAdminAccount(user = currentUser) {
 
 function canMessageConversation(conversation) {
   if (!currentUser || !conversation) return false;
+  if (conversation.isGroup) return true;
   if (isAdminAccount()) return true;
   if (currentUser.profile?.restricted && conversation.number !== "0") return false;
   if (conversation.restricted) return false;
@@ -3310,6 +3649,20 @@ async function ensureSignupCodes() {
 async function renderAdminCodes() {
   adminCodesList.innerHTML = "";
   const codes = (await ensureSignupCodes()).slice(0, 10);
+  const userNameByUid = new Map();
+  await Promise.all(codes
+    .filter((codeItem) => codeItem.usedByUid)
+    .map(async (codeItem) => {
+      try {
+        const userSnapshot = await getDoc(doc(db, "users", codeItem.usedByUid));
+        if (userSnapshot.exists()) {
+          const user = normalizeUserDoc(userSnapshot.id, userSnapshot.data());
+          userNameByUid.set(codeItem.usedByUid, user.profile.name || user.number || "");
+        }
+      } catch (error) {
+        console.warn("Code user name load failed", error);
+      }
+    }));
   codes.forEach((codeItem) => {
     const row = document.createElement("button");
     row.type = "button";
@@ -3318,14 +3671,19 @@ async function renderAdminCodes() {
     const codeText = document.createElement("strong");
     codeText.textContent = codeItem.code || codeItem.id;
     const status = document.createElement("span");
-    status.textContent = codeItem.used ? "Expired" : "Copy";
+    const usedByName = codeItem.usedByUid ? userNameByUid.get(codeItem.usedByUid) : "";
+    const usedByLabel = usedByName || codeItem.usedByName || codeItem.usedByNumber || "";
+    const expiredLabel = codeItem.useType === "passwordForget"
+      ? `Password forget${usedByLabel ? ` - ${usedByLabel}` : ""}`
+      : (usedByLabel ? `Used by ${usedByLabel}` : "Expired");
+    status.textContent = codeItem.used ? expiredLabel : "Copy";
     row.append(codeText, status);
 
     row.addEventListener("click", async () => {
       const copied = await copyText(codeItem.code || codeItem.id);
-      status.textContent = copied ? (codeItem.used ? "Expired copied" : "Copied") : "Copy failed";
+      status.textContent = copied ? (codeItem.used ? `${expiredLabel} copied` : "Copied") : "Copy failed";
       window.setTimeout(() => {
-        status.textContent = codeItem.used ? "Expired" : "Copy";
+        status.textContent = codeItem.used ? expiredLabel : "Copy";
       }, 900);
     });
 
@@ -3680,11 +4038,13 @@ function renderMessages() {
 
   if (currentConversation.chatId && !currentConversation.messagesLoaded) {
     messages.innerHTML = `<div class="messages-state">Loading chat...</div>`;
+    updateJumpBottomButton();
     return;
   }
 
-  const previousScrollBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight;
-  const shouldStickToBottom = previousScrollBottom < 90 || messages.children.length <= 1;
+  const previousScrollTop = messages.scrollTop;
+  const shouldStickToBottom = forceMessagesScrollBottom || isMessagesNearBottom() || messages.children.length <= 1;
+  forceMessagesScrollBottom = false;
   const reusableVoiceRows = new Map([...messages.querySelectorAll(".message-row.voice-row[data-message-id]")].map((row) => {
     return [row.dataset.messageId, row];
   }));
@@ -3725,6 +4085,7 @@ function renderMessages() {
     }
     const bubble = document.createElement("p");
     bubble.className = "message";
+    appendReplyQuote(bubble, message.replyTo);
     if (message.type === "photo" && message.url) {
       bubble.classList.add("photo-message");
       const icon = document.createElement("span");
@@ -3743,7 +4104,7 @@ function renderMessages() {
       const voice = createVoiceBubble(message);
       bubble.append(voice.play, voice.wave, voice.duration, voice.audio);
     } else {
-      bubble.textContent = message.text;
+      appendSmartText(bubble, message.text);
     }
     if (message.reaction === "heart") {
       const reaction = document.createElement("span");
@@ -3751,7 +4112,8 @@ function renderMessages() {
       reaction.textContent = "\u2764\ufe0f";
       bubble.appendChild(reaction);
     }
-    bubble.addEventListener("click", () => {
+    bubble.addEventListener("click", (event) => {
+      event.stopPropagation();
       if (longPressTriggered) {
         longPressTriggered = false;
         return;
@@ -3781,9 +4143,23 @@ function renderMessages() {
       renderMessages();
       syncMessageReaction(currentConversation, message, nextReaction);
     });
-    bubble.addEventListener("pointerdown", () => startLongPress(row, message));
-    bubble.addEventListener("pointerup", cancelLongPress);
-    bubble.addEventListener("pointerleave", cancelLongPress);
+    bubble.addEventListener("pointerdown", (event) => {
+      startReplySwipe(event, row, message);
+      startLongPress(row, message);
+    });
+    bubble.addEventListener("pointermove", moveReplySwipe);
+    bubble.addEventListener("pointerup", (event) => {
+      if (!finishReplySwipe(event)) cancelLongPress();
+    });
+    bubble.addEventListener("pointerleave", () => {
+      if (replySwipeStart?.row === row) {
+        row.classList.remove("reply-swiping");
+        row.style.transform = "";
+        replySwipeStart.pointerTarget?.releasePointerCapture?.(replySwipeStart.pointerId);
+        replySwipeStart = null;
+      }
+      cancelLongPress();
+    });
     bubble.addEventListener("contextmenu", (event) => {
       event.preventDefault();
       openMessageActions(row, message);
@@ -3802,9 +4178,10 @@ function renderMessages() {
   });
 
   if (shouldStickToBottom) {
-    messages.scrollTop = messages.scrollHeight;
+    scrollMessagesToBottom();
   } else {
-    messages.scrollTop = Math.max(0, messages.scrollHeight - messages.clientHeight - previousScrollBottom);
+    messages.scrollTop = previousScrollTop;
+    updateJumpBottomButton();
   }
 }
 
@@ -3904,10 +4281,141 @@ function createMessageStatus(message) {
   return status;
 }
 
+function isMessagesNearBottom(offset = 90) {
+  return messages.scrollHeight - messages.scrollTop - messages.clientHeight < offset;
+}
+
+function updateJumpBottomButton() {
+  if (!jumpBottomButton) return;
+  const canScroll = messages.scrollHeight > messages.clientHeight + 12;
+  const visible = !!currentConversation && canScroll && !isMessagesNearBottom(140);
+  jumpBottomButton.classList.toggle("visible", visible);
+  jumpBottomButton.classList.toggle("has-count", jumpBottomUnread > 0);
+  if (jumpBottomCount) {
+    jumpBottomCount.textContent = jumpBottomUnread > 99 ? "99+" : (jumpBottomUnread ? String(jumpBottomUnread) : "");
+  }
+}
+
+function scrollMessagesToBottom() {
+  jumpBottomUnread = 0;
+  messages.scrollTop = messages.scrollHeight;
+  updateJumpBottomButton();
+}
+
+function appendSmartText(container, text) {
+  const value = String(text || "");
+  const tokenPattern = /(https?:\/\/[^\s]+|www\.[^\s]+)/gi;
+  let lastIndex = 0;
+  value.replace(tokenPattern, (token, _match, offset) => {
+    if (offset > lastIndex) container.appendChild(document.createTextNode(value.slice(lastIndex, offset)));
+    if (/^(https?:\/\/|www\.)/i.test(token)) {
+      const link = document.createElement("a");
+      link.href = token.startsWith("www.") ? `https://${token}` : token;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = token;
+      link.addEventListener("click", (event) => event.stopPropagation());
+      container.appendChild(link);
+    }
+    lastIndex = offset + token.length;
+    return token;
+  });
+  if (lastIndex < value.length) container.appendChild(document.createTextNode(value.slice(lastIndex)));
+}
+
+function appendReplyQuote(bubble, replyTo) {
+  if (!replyTo) return;
+  const quote = document.createElement("button");
+  quote.type = "button";
+  quote.className = "message-reply-quote";
+  quote.dataset.replyTargetId = replyTo.id || "";
+  const name = document.createElement("strong");
+  name.textContent = replyTo.name || (replyTo.from === "me" ? "You" : "User");
+  const text = document.createElement("small");
+  text.textContent = replyTo.text || "";
+  quote.append(name, text);
+  quote.addEventListener("click", (event) => {
+    event.stopPropagation();
+    jumpToReplyTarget(replyTo.id);
+  });
+  bubble.appendChild(quote);
+}
+
+function jumpToReplyTarget(messageId) {
+  if (!messageId) return;
+  const target = messages.querySelector(`.message-row[data-message-id="${CSS.escape(messageId)}"]`);
+  if (!target) return;
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  target.classList.remove("reply-target-highlight");
+  void target.offsetWidth;
+  target.classList.add("reply-target-highlight");
+  window.setTimeout(() => target.classList.remove("reply-target-highlight"), 1500);
+}
+
+function startReplySwipe(event, row, message) {
+  if (event.button && event.button !== 0) return;
+  event.currentTarget?.setPointerCapture?.(event.pointerId);
+  replySwipeStart = {
+    id: message.id,
+    x: event.clientX,
+    y: event.clientY,
+    pointerId: event.pointerId,
+    pointerTarget: event.currentTarget,
+    row,
+    message,
+    active: false
+  };
+}
+
+function moveReplySwipe(event) {
+  if (!replySwipeStart) return;
+  const dx = event.clientX - replySwipeStart.x;
+  const dy = event.clientY - replySwipeStart.y;
+  const allowedDirection = replySwipeStart.message.from === "me" ? -1 : 1;
+  const directionalDx = dx * allowedDirection;
+  if (!replySwipeStart.active && Math.abs(dy) > 72 && Math.abs(dy) > Math.abs(dx) * 1.35) {
+    replySwipeStart.row.style.transform = "";
+    replySwipeStart.pointerTarget?.releasePointerCapture?.(replySwipeStart.pointerId);
+    replySwipeStart = null;
+    return;
+  }
+  if (directionalDx < -6 && !replySwipeStart.active) return;
+  const distance = allowedDirection * Math.min(56, Math.max(0, directionalDx));
+  if (Math.abs(distance) > 7 || replySwipeStart.active) {
+    replySwipeStart.active = true;
+    cancelLongPress();
+    replySwipeStart.row.classList.add("reply-swiping");
+    replySwipeStart.row.style.transform = `translateX(${distance}px)`;
+  }
+}
+
+function finishReplySwipe(event) {
+  if (!replySwipeStart) return false;
+  const swipe = replySwipeStart;
+  replySwipeStart = null;
+  const dx = event.clientX - swipe.x;
+  const allowedDirection = swipe.message.from === "me" ? -1 : 1;
+  const directionalDx = dx * allowedDirection;
+  swipe.row.classList.remove("reply-swiping");
+  swipe.row.style.transform = "";
+  swipe.pointerTarget?.releasePointerCapture?.(swipe.pointerId);
+  if (swipe.active && directionalDx > 36) {
+    event.preventDefault();
+    event.stopPropagation();
+    longPressTriggered = true;
+    setReplyMessage(swipe.message);
+    return true;
+  }
+  return false;
+}
+
 function openConversation(id, allowSeen = true) {
   startOnHomeAfterLogin = false;
+  jumpBottomUnread = 0;
+  clearReplyMessage();
   currentConversation = conversations.find((conversation) => conversation.id === id) || conversations[0];
   if (!currentConversation) return;
+  suppressConversationRenderUntil = Date.now() + 700;
   if (!desktopQuery.matches && !handlingHistoryPop && !chatHistoryActive) {
     history.pushState({ webchatView: "chat", conversationId: currentConversation.id }, "", window.location.href);
     chatHistoryActive = true;
@@ -3936,7 +4444,7 @@ function openConversation(id, allowSeen = true) {
   subscribeToMessages(currentConversation);
   subscribeToPresence(currentConversation);
   renderMessages();
-  renderConversations(searchInput.value);
+  refreshConversationRowsState();
   if (!desktopQuery.matches) {
     messageInput.focus();
   }
@@ -3944,6 +4452,7 @@ function openConversation(id, allowSeen = true) {
 
 function clearDesktopConversationSelection() {
   if (!desktopQuery.matches || !currentConversation) return;
+  jumpBottomUnread = 0;
   if (unsubscribeMessages) unsubscribeMessages();
   if (unsubscribePresence) unsubscribePresence();
   window.clearTimeout(presenceRefreshTimer);
@@ -3961,6 +4470,7 @@ function clearDesktopConversationSelection() {
   chatAvatar.alt = "";
   chatAvatarWrap.classList.remove("active", "offline");
   updateChatEmptyState();
+  updateJumpBottomButton();
   saveUiState({ view: "home" });
   renderConversations(searchInput.value);
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
@@ -3974,6 +4484,8 @@ function closeConversation(fromHistory = false) {
   }
   if (unsubscribeMessages) unsubscribeMessages();
   if (unsubscribePresence) unsubscribePresence();
+  jumpBottomUnread = 0;
+  clearReplyMessage();
   window.clearTimeout(presenceRefreshTimer);
   unsubscribeMessages = null;
   unsubscribePresence = null;
@@ -3987,8 +4499,135 @@ function closeConversation(fromHistory = false) {
   homeScreen.classList.add("active");
   currentConversation = null;
   updateChatEmptyState();
+  updateJumpBottomButton();
   saveUiState({ view: "home" });
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+}
+
+function ensureAppBackTrap() {
+  if (desktopQuery.matches || appBackTrapReady) return;
+  appBackTrapReady = true;
+  try {
+    history.replaceState({ webchatApp: true, view: "home" }, "", window.location.href);
+    history.pushState({ webchatApp: true, view: "guard" }, "", window.location.href);
+  } catch (error) {
+    console.warn("Back guard setup failed", error);
+  }
+}
+
+function pushAppBackTrap() {
+  if (desktopQuery.matches || !appBackTrapReady || allowBrowserBackExit) return;
+  try {
+    history.pushState({ webchatApp: true, view: "guard" }, "", window.location.href);
+  } catch (error) {
+    console.warn("Back guard push failed", error);
+  }
+}
+
+function resetHomeBackPrompt() {
+  homeBackPrimed = false;
+  window.clearTimeout(homeBackPrimeTimer);
+  homeBackPrimeTimer = null;
+}
+
+function closeTopLayerFromBack() {
+  if (activeConfirmDialog) {
+    activeConfirmDialog.remove();
+    activeConfirmDialog = null;
+    confirmOpenedAt = 0;
+    return true;
+  }
+  const photoViewer = document.querySelector(".photo-viewer-overlay");
+  if (photoViewer) {
+    photoViewer.remove();
+    return true;
+  }
+  if (document.querySelector(".message-actions.active")) {
+    closeMessageActions();
+    return true;
+  }
+  if (activeConversationMenu) {
+    closeConversationMenu();
+    return true;
+  }
+  if (attachmentMenu?.classList.contains("active")) {
+    closeAttachmentMenu();
+    return true;
+  }
+  if (emojiMenu?.classList.contains("active")) {
+    closeEmojiMenu();
+    return true;
+  }
+  if (chatOptionsMenu?.classList.contains("active")) {
+    closeChatOptions();
+    return true;
+  }
+  if (homeOptionsMenu?.classList.contains("active")) {
+    closeHomeOptions();
+    return true;
+  }
+  if (userFinderPanel?.classList.contains("active")) {
+    closeUserFinder();
+    return true;
+  }
+  if (friendProfileOverlay.classList.contains("active")) {
+    closeFriendProfile();
+    return true;
+  }
+  if (friendsOverlay.classList.contains("active")) {
+    closeAllFriends();
+    return true;
+  }
+  if (profileOverlay.classList.contains("active")) {
+    closeProfile();
+    return true;
+  }
+  if (savedOverlay.classList.contains("active")) {
+    closeSavedView();
+    return true;
+  }
+  if (adminUsersOverlay.classList.contains("active")) {
+    closeAdminUsers();
+    return true;
+  }
+  if (phoneShell.classList.contains("chat-open")) {
+    handlingHistoryPop = true;
+    closeConversation(true);
+    handlingHistoryPop = false;
+    return true;
+  }
+  return false;
+}
+
+async function handlePhoneBackNavigation() {
+  if (desktopQuery.matches || authScreen.classList.contains("active")) return;
+  if (closeTopLayerFromBack()) {
+    resetHomeBackPrompt();
+    return;
+  }
+
+  if (!homeScreen.classList.contains("active")) return;
+
+  if (!homeBackPrimed) {
+    homeBackPrimed = true;
+    window.clearTimeout(homeBackPrimeTimer);
+    homeBackPrimeTimer = window.setTimeout(() => {
+      homeBackPrimed = false;
+      homeBackPrimeTimer = null;
+    }, 1800);
+    return;
+  }
+
+  resetHomeBackPrompt();
+  const ok = await showConfirmDialog({
+    title: "Exit WebChat?",
+    message: "App theke ber hote chao?",
+    confirmText: "Exit",
+    danger: true
+  });
+  if (!ok) return;
+  allowBrowserBackExit = true;
+  history.back();
 }
 
 function getFriendProfile(conversation) {
@@ -4002,6 +4641,20 @@ function getFriendProfile(conversation) {
     verified: !!conversation.verified,
     editable: false
   };
+}
+
+function isGroupConversation(conversation, profile = null) {
+  return !!(
+    conversation?.isGroup ||
+    conversation?.type === "group" ||
+    conversation?.groupName ||
+    conversation?.bio === "Group chat" ||
+    conversation?.username === "@group.webchat" ||
+    profile?.bio === "Group chat" ||
+    profile?.username === "@group.webchat" ||
+    conversation?.participants?.length ||
+    conversation?.memberIds?.length
+  );
 }
 
 function openProfile(profile = myProfile) {
@@ -4101,22 +4754,31 @@ function openFriendProfile(conversation, options = {}) {
     number: conversation.number
   });
   const profile = getFriendProfile(conversation);
+  const isGroup = isGroupConversation(conversation, profile);
+  if (isGroup) conversation.isGroup = true;
   setImageAfterLoad(friendProfilePhoto, profile.avatar, profile.name);
-  friendPhotoWrap.classList.toggle("active", profile.status === "Active now");
+  const isGroupAdmin = isGroup && (conversation.admins || [conversation.adminId]).includes(firebaseUser?.uid);
+  friendPhotoWrap.classList.toggle("active", !isGroup && profile.status === "Active now");
   friendPhotoWrap.classList.remove("offline");
   setVerifiedName(friendProfileName, profile.name, profile.verified);
   friendProfileStatus.textContent = "";
   friendProfileBio.textContent = profile.bio;
   friendProfileUsername.textContent = profile.username;
   friendProfileNumber.textContent = profile.number;
-  friendProfileBlockButton.hidden = activeFriendProfileFromAdmin;
-  friendProfileVerifyButton.hidden = !isAdminAccount();
-  friendProfileRestrictButton.hidden = !isAdminAccount();
-  friendProfilePasswordButton.hidden = !isAdminAccount();
+  friendProfileBio.closest("button").hidden = isGroup;
+  friendProfileUsername.closest("button").hidden = isGroup;
+  friendProfileNumber.closest("button").hidden = isGroup;
+  renderGroupMembers(conversation);
+  friendProfileBlockButton.hidden = isGroup || activeFriendProfileFromAdmin;
+  friendProfileVerifyButton.hidden = isGroup || !isAdminAccount();
+  friendProfileRestrictButton.hidden = isGroup || !isAdminAccount();
+  friendProfilePasswordButton.hidden = isGroup || !isAdminAccount();
   friendProfileDeleteButton.hidden = !activeFriendProfileFromAdmin && !conversation.chatId;
-  friendProfileDeleteButton.textContent = activeFriendProfileFromAdmin ? "Delete user" : "Delete chat";
+  friendProfileDeleteButton.textContent = isGroup ? "Leave" : "Delete";
   friendProfileVerifyButton.textContent = profile.verified ? "Remove verify badge" : "Give verify badge";
   friendProfileRestrictButton.textContent = conversation.restricted ? "Unrestrict user" : "Restrict user";
+  friendPhotoWrap.classList.toggle("editable", isGroupAdmin);
+  friendProfileName.classList.toggle("editable", isGroupAdmin);
   friendProfileOverlay.classList.add("active");
   friendProfileOverlay.setAttribute("aria-hidden", "false");
   friendProfileCloseButton.focus();
@@ -4131,6 +4793,167 @@ async function copyFriendProfileNumber() {
   window.setTimeout(() => {
     friendProfileNumber.textContent = previous;
   }, 1100);
+}
+
+async function loadGroupMemberProfiles(conversation) {
+  const ids = conversation?.participants || conversation?.memberIds || [];
+  const rows = await Promise.all(ids.map(async (uid) => {
+    if (uid === firebaseUser?.uid) {
+      return {
+        uid,
+        name: myProfile.name || "You",
+        avatar: myProfile.avatar || defaultAvatar
+      };
+    }
+    const existing = conversations.find((item) => item.userId === uid);
+    if (existing) return { uid, name: existing.name, avatar: existing.avatar };
+    try {
+      const snapshot = await getDoc(doc(db, "users", uid));
+      if (!snapshot.exists()) return { uid, name: "Member", avatar: defaultAvatar };
+      const user = normalizeUserDoc(uid, snapshot.data());
+      return { uid, name: user.profile.name, avatar: user.profile.avatar };
+    } catch (error) {
+      return { uid, name: "Member", avatar: defaultAvatar };
+    }
+  }));
+  return rows;
+}
+
+function createGroupMemberRow(conversation, member, admins, currentIsAdmin) {
+  const row = document.createElement("div");
+  row.className = "group-profile-member";
+  const avatar = document.createElement("img");
+  avatar.src = member.avatar || defaultAvatar;
+  avatar.alt = "";
+  const text = document.createElement("span");
+  text.textContent = member.name;
+  row.append(avatar, text);
+  if (admins.has(member.uid)) {
+    const adminBadge = document.createElement("strong");
+    adminBadge.className = "group-admin-badge";
+    adminBadge.textContent = "Admin";
+    row.appendChild(adminBadge);
+  }
+  if (currentIsAdmin && member.uid !== firebaseUser.uid && !admins.has(member.uid)) {
+    const adminButton = document.createElement("button");
+    adminButton.type = "button";
+    adminButton.textContent = "Make admin";
+    adminButton.addEventListener("click", () => makeGroupAdmin(conversation, member.uid));
+    const kickButton = document.createElement("button");
+    kickButton.type = "button";
+    kickButton.textContent = "Kick";
+    kickButton.className = "danger";
+    kickButton.addEventListener("click", () => kickGroupMember(conversation, member.uid));
+    row.append(adminButton, kickButton);
+  }
+  return row;
+}
+
+function renderGroupMembers(conversation) {
+  groupMembersList.innerHTML = "";
+  const isGroup = !!conversation?.isGroup;
+  groupMembersSection.hidden = !isGroup;
+  if (!isGroup) return;
+
+  const admins = new Set(conversation.admins?.length ? conversation.admins : [conversation.adminId].filter(Boolean));
+  const currentIsAdmin = admins.has(firebaseUser?.uid);
+  groupMembersList.innerHTML = `<p class="group-dialog-message">Loading members...</p>`;
+  loadGroupMemberProfiles(conversation).then((members) => {
+    if (activeFriendProfile !== conversation) return;
+    groupMembersList.innerHTML = "";
+    const adminMembers = members.filter((member) => admins.has(member.uid));
+    adminMembers.forEach((member) => {
+      groupMembersList.appendChild(createGroupMemberRow(conversation, member, admins, currentIsAdmin));
+    });
+    groupMembersSeeMoreButton.hidden = members.length <= adminMembers.length;
+  });
+}
+
+async function openAllGroupMembers() {
+  const conversation = activeFriendProfile;
+  if (!conversation?.isGroup) return;
+  const admins = new Set(conversation.admins?.length ? conversation.admins : [conversation.adminId].filter(Boolean));
+  const currentIsAdmin = admins.has(firebaseUser?.uid);
+  const members = await loadGroupMemberProfiles(conversation);
+
+  const overlay = document.createElement("section");
+  overlay.className = "confirm-overlay active";
+  overlay.setAttribute("aria-hidden", "false");
+  const dialog = document.createElement("article");
+  dialog.className = "confirm-dialog group-dialog";
+  dialog.addEventListener("click", (event) => event.stopPropagation());
+  const heading = document.createElement("h3");
+  heading.textContent = "Members";
+  const list = document.createElement("div");
+  list.className = "group-member-full-list";
+  members.forEach((member) => {
+    list.appendChild(createGroupMemberRow(conversation, member, admins, currentIsAdmin));
+  });
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "confirm-primary";
+  closeButton.textContent = "Close";
+  const close = () => overlay.remove();
+  closeButton.addEventListener("click", close);
+  overlay.addEventListener("click", close);
+  dialog.append(heading, list, closeButton);
+  overlay.appendChild(dialog);
+  phoneShell.appendChild(overlay);
+}
+
+async function updateGroup(conversation, update) {
+  await setDoc(doc(db, "chats", conversation.chatId), {
+    ...update,
+    updatedAt: firestoreServerTimestamp()
+  }, { merge: true });
+}
+
+async function makeGroupAdmin(conversation, uid) {
+  const admins = Array.from(new Set([...(conversation.admins || [conversation.adminId]), uid].filter(Boolean)));
+  conversation.admins = admins;
+  await updateGroup(conversation, { admins });
+  renderGroupMembers(conversation);
+}
+
+async function kickGroupMember(conversation, uid) {
+  const admins = new Set(conversation.admins || [conversation.adminId]);
+  if (admins.has(uid)) return;
+  conversation.participants = (conversation.participants || []).filter((item) => item !== uid);
+  conversation.memberIds = conversation.participants;
+  await updateGroup(conversation, { participants: conversation.participants });
+  renderGroupMembers(conversation);
+  renderConversations(searchInput.value);
+}
+
+async function editActiveGroupName() {
+  if (!activeFriendProfile?.isGroup) return;
+  const admins = activeFriendProfile.admins || [activeFriendProfile.adminId];
+  if (!admins.includes(firebaseUser?.uid)) return;
+  const nextName = window.prompt("Group name", activeFriendProfile.name);
+  if (!nextName?.trim()) return;
+  activeFriendProfile.name = nextName.trim();
+  await updateGroup(activeFriendProfile, { groupName: activeFriendProfile.name });
+  openFriendProfile(activeFriendProfile);
+  renderConversations(searchInput.value);
+}
+
+async function changeActiveGroupPhoto(event) {
+  if (!activeFriendProfile?.isGroup) return;
+  const admins = activeFriendProfile.admins || [activeFriendProfile.adminId];
+  if (!admins.includes(firebaseUser?.uid)) return;
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    const avatar = await compressPhotoFile(file, 360, 0.82);
+    activeFriendProfile.avatar = avatar;
+    await updateGroup(activeFriendProfile, { avatar });
+    setImageAfterLoad(friendProfilePhoto, avatar, activeFriendProfile.name);
+    renderConversations(searchInput.value);
+    if (currentConversation?.id === activeFriendProfile.id) renderMessages();
+  } catch (error) {
+    window.alert("Group photo update hoy nai.");
+  }
 }
 
 async function blockActiveFriend() {
@@ -4225,6 +5048,34 @@ async function toggleActiveFriendRestriction() {
 
 async function deleteActiveFriendProfile() {
   if (!activeFriendProfile || !firebaseUser) return;
+
+  if (activeFriendProfile.isGroup) {
+    const conversation = activeFriendProfile;
+    const ok = await showConfirmDialog({
+      title: "Leave group?",
+      message: conversation.name,
+      confirmText: "Leave",
+      danger: true
+    });
+    if (!ok) return;
+    conversation.participants = (conversation.participants || []).filter((uid) => uid !== firebaseUser.uid);
+    conversation.memberIds = conversation.participants;
+    conversation.admins = (conversation.admins || [conversation.adminId]).filter((uid) => uid !== firebaseUser.uid);
+    try {
+      await updateGroup(conversation, {
+        participants: conversation.participants,
+        admins: conversation.admins
+      });
+    } catch (error) {
+      window.alert("Group leave hoy nai. Firebase rules check koro.");
+      return;
+    }
+    conversations.splice(0, conversations.length, ...conversations.filter((item) => item.id !== conversation.id));
+    closeFriendProfile();
+    if (currentConversation?.id === conversation.id) clearDesktopConversationSelection();
+    renderConversations(searchInput.value);
+    return;
+  }
 
   if (!activeFriendProfileFromAdmin) {
     const conversation = activeFriendProfile;
@@ -4385,6 +5236,10 @@ async function clearChat() {
 
 function prepareOutgoingConversation(conversation) {
   const hadChat = !!conversation?.chatId;
+  if (conversation?.isGroup) {
+    conversation.pendingRemoteChat = true;
+    return { chatId: conversation.chatId, hadChat };
+  }
   if (!conversation?.chatId && firebaseUser && conversation?.userId) {
     const chatId = chatIdFor(firebaseUser.uid, conversation.userId);
     conversation.chatId = chatId;
@@ -4406,6 +5261,9 @@ async function saveOutgoingRemoteMessage(conversation, messageData, lastMessage,
   const chatRef = doc(db, "chats", conversation.chatId);
   showConversationLocally(firebaseUser.uid, conversation.chatId);
   keepOutgoingConversationVisible(conversation);
+  const participants = conversation.isGroup
+    ? Array.from(new Set([firebaseUser.uid, ...(conversation.participants || conversation.memberIds || [])]))
+    : [firebaseUser.uid, conversation.userId];
   const remoteMessageData = {
     ...messageData,
     encrypted: true,
@@ -4418,21 +5276,27 @@ async function saveOutgoingRemoteMessage(conversation, messageData, lastMessage,
   if (messageData.url) remoteMessageData.urlCipher = await encryptChatValue(conversation.chatId, messageData.url);
   if (messageData.fileName) remoteMessageData.fileNameCipher = await encryptChatValue(conversation.chatId, messageData.fileName);
   const chatUpdate = {
-    participants: [firebaseUser.uid, conversation.userId],
+    participants,
+    ...(conversation.isGroup ? { type: "group", groupName: conversation.name, adminId: conversation.adminId || firebaseUser.uid } : {}),
     lastMessage: lastMessage === "Photo" || lastMessage === "Voice" ? lastMessage : "Message",
     encryptedLast: true,
     lastSenderId: firebaseUser.uid,
     lastTime: "Now",
-    [`unreadBy.${conversation.userId}`]: fieldIncrement(1),
     [`unreadBy.${firebaseUser.uid}`]: 0,
     updatedAt: firestoreServerTimestamp()
   };
+  participants
+    .filter((uid) => uid && uid !== firebaseUser.uid)
+    .forEach((uid) => {
+      chatUpdate[`unreadBy.${uid}`] = fieldIncrement(1);
+    });
   const visibilityUpdate = {
     [`hiddenBy.${firebaseUser.uid}`]: fieldDelete(),
-    [`hiddenBy.${conversation.userId}`]: fieldDelete(),
-    [`hiddenLastBy.${firebaseUser.uid}`]: fieldDelete(),
-    [`hiddenLastBy.${conversation.userId}`]: fieldDelete()
   };
+  participants.forEach((uid) => {
+    visibilityUpdate[`hiddenBy.${uid}`] = fieldDelete();
+    visibilityUpdate[`hiddenLastBy.${uid}`] = fieldDelete();
+  });
 
   if (!hadChat) {
     const messageRef = collection(db, "chats", conversation.chatId, "messages").doc();
@@ -4461,7 +5325,7 @@ async function saveOutgoingRemoteMessage(conversation, messageData, lastMessage,
 
 async function sendMessage(text) {
   const conversation = currentConversation;
-  if (!firebaseUser || !conversation?.userId) return;
+  if (!firebaseUser || (!conversation?.userId && !conversation?.isGroup)) return;
   if (!canMessageConversation(conversation)) {
     window.alert(restrictedMessage(conversation));
     return;
@@ -4476,6 +5340,7 @@ async function sendMessage(text) {
     time: currentClockTime(),
     date: "Today",
     status: navigator.onLine ? "sent" : "pending",
+    replyTo: attachReply(),
     createdAtMs: Date.now(),
     localOrder: Date.now()
   };
@@ -4489,6 +5354,7 @@ async function sendMessage(text) {
   keepOutgoingConversationVisible(conversation);
   moveConversationToTop(currentConversation);
   writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+  forceMessagesScrollBottom = true;
   renderMessages();
   renderConversations(searchInput.value);
 
@@ -4496,16 +5362,19 @@ async function sendMessage(text) {
     clientId: message.clientId,
     text,
     senderId: firebaseUser.uid,
-    receiverId: conversation.userId,
+    receiverId: conversation.isGroup ? "" : conversation.userId,
     status: "sent",
+    replyTo: message.replyTo,
     time: message.time,
     date: "Today",
     localCreatedAtMs: message.createdAtMs
   };
+  clearReplyMessage();
 
   if (!navigator.onLine) {
     queueOutgoingMessage(conversation, message, messageData, text, hadChat);
     writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+    forceMessagesScrollBottom = true;
     renderMessages();
     renderConversations(searchInput.value);
     return;
@@ -4526,6 +5395,7 @@ async function sendMessage(text) {
       message.status = "pending";
       queueOutgoingMessage(conversation, message, messageData, text, hadChat);
       writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+      forceMessagesScrollBottom = true;
       renderMessages();
       return;
     }
@@ -4684,7 +5554,7 @@ function showPhotoDraft() {
 }
 
 function preparePhotoDraft(input, file) {
-  if (!firebaseUser || !currentConversation?.userId) {
+  if (!firebaseUser || (!currentConversation?.userId && !currentConversation?.isGroup)) {
     input.value = "";
     return;
   }
@@ -4700,7 +5570,7 @@ function preparePhotoDraft(input, file) {
 
 async function sendPhotoAttachment(file = pendingPhotoFile) {
   const conversation = currentConversation;
-  if (!firebaseUser || !conversation?.userId) {
+  if (!firebaseUser || (!conversation?.userId && !conversation?.isGroup)) {
     clearPhotoDraft();
     return;
   }
@@ -4719,6 +5589,7 @@ async function sendPhotoAttachment(file = pendingPhotoFile) {
       time: currentClockTime(),
       date: "Today",
       status: navigator.onLine ? "sent" : "pending",
+      replyTo: attachReply(),
       createdAtMs: Date.now(),
       localOrder: Date.now()
     };
@@ -4733,6 +5604,7 @@ async function sendPhotoAttachment(file = pendingPhotoFile) {
     moveConversationToTop(conversation);
     clearPhotoDraft();
     writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+    forceMessagesScrollBottom = true;
     renderMessages();
     renderConversations(searchInput.value);
 
@@ -4743,16 +5615,19 @@ async function sendPhotoAttachment(file = pendingPhotoFile) {
       url,
       fileName: file.name,
       senderId: firebaseUser.uid,
-      receiverId: conversation.userId,
+      receiverId: conversation.isGroup ? "" : conversation.userId,
       status: "sent",
+      replyTo: message.replyTo,
       time: message.time,
       date: "Today",
       localCreatedAtMs: message.createdAtMs
     };
+    clearReplyMessage();
 
     if (!navigator.onLine) {
       queueOutgoingMessage(conversation, message, messageData, "Photo", hadChat);
       writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+      forceMessagesScrollBottom = true;
       renderMessages();
       renderConversations(searchInput.value);
       return;
@@ -4773,6 +5648,7 @@ async function sendPhotoAttachment(file = pendingPhotoFile) {
         message.status = "pending";
         queueOutgoingMessage(conversation, message, messageData, "Photo", hadChat);
         writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+        forceMessagesScrollBottom = true;
         renderMessages();
         renderConversations(searchInput.value);
         return;
@@ -4994,7 +5870,7 @@ async function startVoiceRecording() {
 
 async function sendVoiceMessage() {
   const conversation = currentConversation;
-  if (!pendingVoiceBlob || !firebaseUser || !conversation?.userId) return;
+  if (!pendingVoiceBlob || !firebaseUser || (!conversation?.userId && !conversation?.isGroup)) return;
   let queuedVoice = null;
   try {
     const { hadChat } = prepareOutgoingConversation(conversation);
@@ -5011,6 +5887,7 @@ async function sendVoiceMessage() {
       time: currentClockTime(),
       date: "Today",
       status: navigator.onLine ? "sent" : "pending",
+      replyTo: attachReply(),
       createdAtMs: Date.now(),
       localOrder: Date.now()
     };
@@ -5024,6 +5901,7 @@ async function sendVoiceMessage() {
     keepOutgoingConversationVisible(conversation);
     moveConversationToTop(conversation);
     writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
+    forceMessagesScrollBottom = true;
     renderMessages();
     renderConversations(searchInput.value);
 
@@ -5034,18 +5912,21 @@ async function sendVoiceMessage() {
       url,
       fileName: message.fileName,
       senderId: firebaseUser.uid,
-      receiverId: conversation.userId,
+      receiverId: conversation.isGroup ? "" : conversation.userId,
       status: "sent",
+      replyTo: message.replyTo,
       time: message.time,
       date: "Today",
       localCreatedAtMs: message.createdAtMs
     };
     queuedVoice = { conversation, message, messageData, hadChat };
+    clearReplyMessage();
 
     if (!navigator.onLine) {
       queueOutgoingMessage(conversation, message, messageData, "Voice", hadChat);
       writeLocalMessages(firebaseUser.uid, conversation.chatId, conversation.messages);
       clearVoiceDraft();
+      forceMessagesScrollBottom = true;
       renderMessages();
       renderConversations(searchInput.value);
       return;
@@ -5066,6 +5947,7 @@ async function sendVoiceMessage() {
       queueOutgoingMessage(queuedVoice.conversation, queuedVoice.message, queuedVoice.messageData, "Voice", queuedVoice.hadChat);
       writeLocalMessages(firebaseUser.uid, queuedVoice.conversation.chatId, queuedVoice.conversation.messages);
       clearVoiceDraft();
+      forceMessagesScrollBottom = true;
       renderMessages();
       renderConversations(searchInput.value);
       return;
@@ -5098,6 +5980,15 @@ function openMessageActions(row, message) {
   const menu = document.createElement("div");
   menu.className = "message-actions active";
 
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Copy";
+  copyButton.addEventListener("click", async () => {
+    const copied = await copyText(message.text || replySnippet(message));
+    copyButton.textContent = copied ? "Copied" : "Copy failed";
+    window.setTimeout(closeMessageActions, 500);
+  });
+
   const removeButton = document.createElement("button");
   removeButton.type = "button";
   removeButton.textContent = "Remove";
@@ -5105,6 +5996,7 @@ function openMessageActions(row, message) {
 
   if (message.from === "me") {
     if (message.type && message.type !== "text") {
+      menu.appendChild(copyButton);
       menu.appendChild(removeButton);
       row.appendChild(menu);
       return;
@@ -5116,6 +6008,7 @@ function openMessageActions(row, message) {
     menu.appendChild(editButton);
   }
 
+  menu.appendChild(copyButton);
   menu.appendChild(removeButton);
   row.appendChild(menu);
 }
@@ -5309,6 +6202,7 @@ function editPassword() {
 function startGelButtonDrag(event) {
   const button = event.target.closest("button");
   if (!button || button.disabled) return;
+  if (button.classList.contains("conversation") || button.closest(".chat-list")) return;
 
   activeGelButton = button;
   gelStartX = event.clientX;
@@ -5349,6 +6243,12 @@ function endGelButtonDrag(event) {
 }
 
 backButton.addEventListener("click", closeConversation);
+replyCancelButton.addEventListener("click", clearReplyMessage);
+jumpBottomButton.addEventListener("click", () => {
+  forceMessagesScrollBottom = true;
+  scrollMessagesToBottom();
+});
+messages.addEventListener("scroll", updateJumpBottomButton);
 loginForm.addEventListener("submit", handleLogin);
 signupForm.addEventListener("submit", handleSignup);
 signupCodePasteButton.addEventListener("click", pasteSignupCode);
@@ -5378,7 +6278,9 @@ authSwitchButton.addEventListener("click", async () => {
 homeOptionsButton.addEventListener("click", toggleHomeOptions);
 showArchivedButton.addEventListener("click", () => openSavedView("archived"));
 showBlockedButton.addEventListener("click", () => openSavedView("blocked"));
-addUserButton.addEventListener("click", toggleUserFinder);
+addUserButton.addEventListener("click", toggleFabActions);
+fabGroupButton.addEventListener("click", () => openAddGroup());
+fabFriendButton.addEventListener("click", toggleUserFinder);
 userSearchButton.addEventListener("click", searchUserByNumber);
 userSearchNumber.addEventListener("input", updateUserSearchButton);
 userSearchNumber.addEventListener("keydown", (event) => {
@@ -5397,7 +6299,13 @@ profileBackdrop.addEventListener("click", closeProfile);
 profileCloseButton.addEventListener("click", closeProfile);
 profileEditButton.addEventListener("click", toggleProfileDetailsEdit);
 profilePhotoButton.addEventListener("click", () => profilePhotoInput.click());
-profilePhotoInput.addEventListener("change", changeProfilePhoto);
+profilePhotoInput.addEventListener("change", (event) => {
+  if (activeFriendProfile?.isGroup && friendProfileOverlay.classList.contains("active")) {
+    changeActiveGroupPhoto(event);
+  } else {
+    changeProfilePhoto(event);
+  }
+});
 profileNameButton.addEventListener("click", changeProfileName);
 profileNameInput.addEventListener("blur", saveProfileName);
 profileNameInput.addEventListener("keydown", (event) => {
@@ -5420,6 +6328,14 @@ seeAllFriendsButton.addEventListener("click", openAllFriends);
 friendsCloseButton.addEventListener("click", closeAllFriends);
 friendProfileCloseButton.addEventListener("click", closeFriendProfile);
 friendProfileNumber.closest("button")?.addEventListener("click", copyFriendProfileNumber);
+friendPhotoWrap.addEventListener("click", () => {
+  if (!activeFriendProfile?.isGroup) return;
+  const admins = activeFriendProfile.admins || [activeFriendProfile.adminId];
+  if (!admins.includes(firebaseUser?.uid)) return;
+  profilePhotoInput.click();
+});
+friendProfileName.addEventListener("click", editActiveGroupName);
+groupMembersSeeMoreButton.addEventListener("click", openAllGroupMembers);
 friendProfileMessageButton.addEventListener("click", messageActiveFriendProfile);
 friendProfileBlockButton.addEventListener("click", blockActiveFriend);
 friendProfileVerifyButton.addEventListener("click", toggleActiveFriendVerification);
@@ -5547,7 +6463,10 @@ document.addEventListener("click", (event) => {
   if (!homeOptionsMenu.contains(event.target) && !homeOptionsButton.contains(event.target)) {
     closeHomeOptions();
   }
-  if (!userFinderPanel.contains(event.target) && !addUserButton.contains(event.target)) {
+  if (!fabActions.contains(event.target) && !addUserButton.contains(event.target)) {
+    closeFabActions();
+  }
+  if (!userFinderPanel.contains(event.target) && !fabFriendButton.contains(event.target)) {
     closeUserFinder();
   }
 });
@@ -5558,13 +6477,10 @@ document.addEventListener("pointerup", endGelButtonDrag);
 document.addEventListener("pointercancel", endGelButtonDrag);
 
 window.addEventListener("popstate", () => {
-  if (desktopQuery.matches) return;
-
-  if (phoneShell.classList.contains("chat-open")) {
-    handlingHistoryPop = true;
-    closeConversation(true);
-    handlingHistoryPop = false;
-  }
+  if (desktopQuery.matches || allowBrowserBackExit) return;
+  handlePhoneBackNavigation().finally(() => {
+    pushAppBackTrap();
+  });
 });
 
 document.addEventListener("visibilitychange", () => {
