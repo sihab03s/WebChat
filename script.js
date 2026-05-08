@@ -223,6 +223,7 @@ const chatList = document.querySelector("#chatList");
 const messages = document.querySelector("#messages");
 const chatName = document.querySelector("#chatName");
 const chatStatus = document.querySelector("#chatStatus");
+const chatTitle = document.querySelector(".chat-title");
 const chatAvatar = document.querySelector("#chatAvatar");
 const chatAvatarWrap = document.querySelector("#chatAvatarWrap");
 const jumpBottomButton = document.querySelector("#jumpBottomButton");
@@ -250,10 +251,16 @@ const userSearchMessage = document.querySelector("#userSearchMessage");
 const userSearchResult = document.querySelector("#userSearchResult");
 const chatOptionsButton = document.querySelector("#chatOptionsButton");
 const chatOptionsMenu = document.querySelector("#chatOptionsMenu");
+const chatAddMemberButton = document.querySelector("#chatAddMemberButton");
+const chatGroupRequestsButton = document.querySelector("#chatGroupRequestsButton");
+const groupRequestBadge = document.querySelector("#groupRequestBadge");
 const muteChatButton = document.querySelector("#muteChatButton");
 const clearChatButton = document.querySelector("#clearChatButton");
 const backButton = document.querySelector("#backButton");
 const messageForm = document.querySelector("#messageForm");
+const blockedComposer = document.querySelector("#blockedComposer");
+const blockedComposerText = blockedComposer?.querySelector("span");
+const blockedComposerUnblock = document.querySelector("#blockedComposerUnblock");
 const messageInput = document.querySelector("#messageInput");
 const messageInputWrap = document.querySelector(".message-input-wrap");
 const replyPreview = document.querySelector("#replyPreview");
@@ -298,10 +305,15 @@ const friendsOverlay = document.querySelector("#friendsOverlay");
 const allFriendsList = document.querySelector("#allFriendsList");
 const friendsCloseButton = document.querySelector("#friendsCloseButton");
 const friendProfileOverlay = document.querySelector("#friendProfileOverlay");
+const friendProfilePanel = document.querySelector(".friend-profile-panel");
 const friendProfileCloseButton = document.querySelector("#friendProfileCloseButton");
+const friendProfileEditButton = document.querySelector("#friendProfileEditButton");
 const friendPhotoWrap = document.querySelector("#friendPhotoWrap");
 const friendProfilePhoto = document.querySelector("#friendProfilePhoto");
+const friendProfilePhotoButton = document.querySelector("#friendProfilePhotoButton");
 const friendProfileName = document.querySelector("#friendProfileName");
+const friendProfileNameInput = document.querySelector("#friendProfileNameInput");
+const friendProfileNameButton = document.querySelector("#friendProfileNameButton");
 const friendProfileStatus = document.querySelector("#friendProfileStatus");
 const friendProfileBio = document.querySelector("#friendProfileBio");
 const friendProfileUsername = document.querySelector("#friendProfileUsername");
@@ -353,6 +365,7 @@ let unsubscribeConnection = null;
 let unsubscribeUserSession = null;
 let currentSessionId = null;
 let activeMessageChatId = null;
+let activeMessageTimeId = null;
 let activePresenceUserId = null;
 let seenAllowedChatId = null;
 let presenceRefreshTimer = null;
@@ -383,6 +396,8 @@ let pendingVoiceUrl = "";
 let voiceDiscarding = false;
 let voiceMimeType = "audio/webm";
 let voiceAutoSendAfterStop = false;
+const memberProfileCache = new Map();
+const memberProfileLoadRequests = new Set();
 let pendingPhotoFile = null;
 let pendingPhotoUrl = "";
 let activeReplyMessage = null;
@@ -448,6 +463,43 @@ const demoUsers = [
 
 function normalizePhoneNumber(number) {
   return String(number || "").trim().replace(/[\s\-()]/g, "");
+}
+
+function normalizeBangladeshPhoneNumber(number) {
+  const digits = String(number || "").replace(/\D/g, "");
+  if (digits === "0") return "0";
+  if (/^01\d{9}$/.test(digits)) return digits;
+  if (/^1\d{9}$/.test(digits)) return `0${digits}`;
+  if (/^8801\d{9}$/.test(digits)) return `0${digits.slice(3)}`;
+  return "";
+}
+
+function maxBangladeshPhoneDigits(digits) {
+  if (digits.startsWith("880")) return 13;
+  if (digits.startsWith("1")) return 10;
+  if (digits.startsWith("0")) return 11;
+  return 13;
+}
+
+function enforceAuthNumberLimit(input) {
+  const digits = String(input.value || "").replace(/\D/g, "");
+  const maxDigits = maxBangladeshPhoneDigits(digits);
+  const nextValue = digits.slice(0, maxDigits);
+  input.value = nextValue;
+  if (digits.length <= maxDigits) return;
+  input.classList.remove("input-warning");
+  void input.offsetWidth;
+  input.classList.add("input-warning");
+  setAuthMessage("Number beshi hoye geche");
+  window.setTimeout(() => input.classList.remove("input-warning"), 320);
+}
+
+function sanitizeUserSearchValue(value) {
+  const raw = String(value || "").trim();
+  if (raw.startsWith("@")) {
+    return `@${raw.slice(1).toLowerCase().replace(/[^a-z0-9_.]/g, "")}`;
+  }
+  return raw.replace(/\D/g, "");
 }
 
 function numberToEmail(number) {
@@ -582,14 +634,15 @@ function groupToConversation(chatId, data = {}) {
     admins,
     participants,
     memberIds: participants,
+    pendingAddRequests: Array.isArray(data.pendingAddRequests) ? data.pendingAddRequests : [],
     userId: "",
     name,
     status: `${Math.max(participants.length, 1)} members`,
     avatar: data.avatar || defaultAvatar,
     time: data.lastTime || "Now",
     unread: 0,
-    bio: "Group chat",
-    username: "@group.webchat",
+    bio: data.bio || "Group chat",
+    username: data.username || "@group.webchat",
     number: "",
     restricted: false,
     verified: false,
@@ -1267,7 +1320,7 @@ function showAuthMode(mode) {
   signupComplete.setAttribute("aria-hidden", "true");
   authMessage.classList.remove("hidden");
   authTitle.textContent = isSignup ? "Create account" : "Login";
-  authTitle.classList.remove("hidden");
+  authTitle.classList.add("hidden");
   authSwitchButton.textContent = isSignup ? "Already have an account" : "Create new account";
   setAuthMessage("");
   if (mode === "login") {
@@ -1660,7 +1713,7 @@ async function handleLogin(event) {
   event.preventDefault();
   requestSystemNotificationPermission();
   setAuthLoading(loginSubmitButton, true);
-  const number = normalizePhoneNumber(loginNumber.value);
+  const number = normalizeBangladeshPhoneNumber(loginNumber.value) || normalizePhoneNumber(loginNumber.value);
   const password = loginPassword.value;
 
   if (!number || !password) {
@@ -1709,19 +1762,25 @@ async function handleSignup(event) {
   requestSystemNotificationPermission();
   setAuthLoading(signupSubmitButton, true);
   const name = signupName.value.trim();
-  const number = normalizePhoneNumber(signupNumber.value);
+  const number = normalizeBangladeshPhoneNumber(signupNumber.value);
   const password = signupPassword.value;
   const confirmPassword = signupConfirmPassword.value;
   const adminCode = normalizeSignupCode(signupAdminCode.value);
 
   if (!name || !number || !password || !confirmPassword || !adminCode) {
-    setAuthMessage("Name, number, password ar admin code lagbe");
+    setAuthMessage("Name, valid BD number, password ar admin code lagbe");
+    setAuthLoading(signupSubmitButton, false);
+    return;
+  }
+
+  if (password.length < 6) {
+    setAuthMessage("Password 6 tar kom hole hobe na");
     setAuthLoading(signupSubmitButton, false);
     return;
   }
 
   if (password !== confirmPassword) {
-    setAuthMessage("Confirm password match kore nai");
+    setAuthMessage("Confirm password same hoy nai");
     setAuthLoading(signupSubmitButton, false);
     return;
   }
@@ -2000,6 +2059,11 @@ async function subscribeToMyChats() {
           seenBy: data.seenBy || {},
           deliveredBy: data.deliveredBy || {},
           reactionsByMessage: data.reactionsByMessage || {},
+          archived: !!data.archivedBy?.[ownerUid],
+          blockedBy: data.blockedBy || {},
+          blockedByMe: !!data.blockedBy?.[ownerUid],
+          blockedByThem: false,
+          blocked: !!data.blockedBy?.[ownerUid],
           pinned: !!data.pinnedBy?.[ownerUid],
           pinnedAt: data.pinnedAtBy?.[ownerUid] || 0,
           unread: isOpenChat ? 0 : data.unreadBy?.[ownerUid] || 0,
@@ -2036,6 +2100,11 @@ async function subscribeToMyChats() {
         seenBy: data.seenBy || {},
         deliveredBy: data.deliveredBy || {},
         reactionsByMessage: data.reactionsByMessage || {},
+        archived: !!data.archivedBy?.[ownerUid],
+        blockedBy: data.blockedBy || {},
+        blockedByMe: !!data.blockedBy?.[ownerUid],
+        blockedByThem: !!data.blockedBy?.[otherUid],
+        blocked: !!data.blockedBy?.[ownerUid] || !!data.blockedBy?.[otherUid],
         pinned: !!data.pinnedBy?.[ownerUid],
         pinnedAt: data.pinnedAtBy?.[ownerUid] || 0,
         unread: isOpenChat ? 0 : data.unreadBy?.[ownerUid] || 0,
@@ -2074,6 +2143,11 @@ async function subscribeToMyChats() {
         Object.assign(currentConversation, {
           seenBy: updatedCurrent.seenBy || currentConversation.seenBy,
           deliveredBy: updatedCurrent.deliveredBy || currentConversation.deliveredBy,
+          blockedBy: updatedCurrent.blockedBy || currentConversation.blockedBy || {},
+          blockedByMe: !!updatedCurrent.blockedByMe,
+          blockedByThem: !!updatedCurrent.blockedByThem,
+          blocked: !!updatedCurrent.blocked,
+          muted: !!updatedCurrent.muted,
           unread: 0,
           lastMessage: currentConversation.lastMessage || updatedCurrent.lastMessage,
           lastSenderId: currentConversation.lastSenderId || updatedCurrent.lastSenderId,
@@ -2326,6 +2400,8 @@ async function normalizeMessageDoc(messageDoc, ownerUid, index = 0, chatId = "")
     id: messageDoc.id,
     from: fromMe ? "me" : "them",
     senderId: data.senderId,
+    senderName: data.senderName || "",
+    senderAvatar: data.senderAvatar || "",
     receiverId: data.receiverId,
     clientId: data.clientId || "",
     encrypted,
@@ -2407,6 +2483,18 @@ function mergeLocalMessages(uid, chatId, remoteMessages, hiddenIds = new Set()) 
 
 function applySeenState(conversation) {
   if (!conversation || !firebaseUser) return;
+  if (conversation.isGroup) {
+    conversation.messages.forEach((message) => {
+      if (message.from !== "me") return;
+      const messageTime = message.createdAtMs || message.localOrder || 0;
+      const seenMemberIds = Object.entries(conversation.seenBy || {})
+        .filter(([uid, seenAt]) => uid !== firebaseUser.uid && messageTime && seenAt >= messageTime)
+        .map(([uid]) => uid);
+      message.seenByMembers = seenMemberIds;
+      if (seenMemberIds.length) message.status = "seen";
+    });
+    return;
+  }
   const seenAt = conversation.seenBy?.[conversation.userId] || 0;
   if (!seenAt) return;
   conversation.messages.forEach((message) => {
@@ -2722,7 +2810,7 @@ function renderConversations(filter = "") {
   renderStories();
 
   conversations
-    .filter((conversation) => !conversation.archived && !conversation.blocked)
+    .filter((conversation) => !conversation.archived)
     .filter((conversation) => {
       const haystack = `${conversation.name} ${latestMessage(conversation)}`.toLowerCase();
       return haystack.includes(query);
@@ -2780,6 +2868,7 @@ function renderConversations(filter = "") {
       if (conversation.unread) {
         const dot = document.createElement("span");
         dot.className = "unread-dot";
+        dot.textContent = String(conversation.unread);
         dot.setAttribute("aria-label", `${conversation.unread} unread messages`);
         meta.appendChild(dot);
       } else {
@@ -2803,6 +2892,7 @@ function refreshConversationRowsState() {
     if (conversation.unread) {
       const dot = document.createElement("span");
       dot.className = "unread-dot";
+      dot.textContent = String(conversation.unread);
       dot.setAttribute("aria-label", `${conversation.unread} unread messages`);
       meta.appendChild(dot);
     } else {
@@ -2842,7 +2932,6 @@ function openConversationProfileFromPress(conversationId) {
 
 chatList.addEventListener("pointerdown", (event) => {
   if (event.button && event.button !== 0) return;
-  if (event.pointerType === "mouse") return;
   const row = event.target.closest(".conversation");
   const conversation = conversationFromElement(event.target);
   if (!row || !conversation) return;
@@ -2859,14 +2948,16 @@ chatList.addEventListener("pointerdown", (event) => {
   conversationHoldTimer = window.setTimeout(() => {
     if (!pendingConversationPress || pendingConversationPress.id !== conversation.id) return;
     longPressTriggered = true;
+    suppressConversationClickUntil = Date.now() + 900;
     openConversationMenu(row, conversation, pendingConversationPress);
   }, 520);
 });
 
 chatList.addEventListener("pointermove", (event) => {
   if (!pendingConversationPress) return;
+  if (longPressTriggered) return;
   const moved = Math.hypot(event.clientX - pendingConversationPress.x, event.clientY - pendingConversationPress.y);
-  if (moved <= 10) return;
+  if (moved <= 24) return;
   pendingConversationPress = null;
   window.clearTimeout(conversationHoldTimer);
   longPressTriggered = false;
@@ -2874,6 +2965,17 @@ chatList.addEventListener("pointermove", (event) => {
 
 document.addEventListener("pointerup", (event) => {
   if (!pendingConversationPress) return;
+  if (longPressTriggered) {
+    event.preventDefault();
+    event.stopPropagation();
+    suppressConversationClickUntil = Date.now() + 900;
+    pendingConversationPress = null;
+    window.clearTimeout(conversationHoldTimer);
+    window.setTimeout(() => {
+      longPressTriggered = false;
+    }, 0);
+    return;
+  }
 
   pendingConversationPress = null;
   window.clearTimeout(conversationHoldTimer);
@@ -2894,7 +2996,7 @@ chatList.addEventListener("click", (event) => {
   }
   event.preventDefault();
   event.stopPropagation();
-  if (longPressTriggered || (activeConversationMenu && Date.now() - menuOpenedAt < 700)) return;
+  if (longPressTriggered || Date.now() < suppressConversationClickUntil || (activeConversationMenu && Date.now() - menuOpenedAt < 700)) return;
   closeConversationMenu();
   if (event.target.closest(".conversation-avatar-wrap")) {
     openConversationProfileFromPress(row.dataset.conversationId);
@@ -3042,11 +3144,18 @@ function openConversationMenu(anchor, conversation, position = null) {
       confirmText: "Archive"
     });
     if (!ok) return;
-    conversation.archived = true;
+    await setConversationArchiveState(conversation, true);
     afterConversationHidden(conversation);
   });
 
-  const blockButton = createConversationMenuButton("Block", iconPaths.block, async () => {
+  const blockButton = createConversationMenuButton(conversation.blockedByMe ? "Unblock" : "Block", iconPaths.block, async () => {
+    if (conversation.blockedByMe) {
+      await setConversationBlockState(conversation, false);
+      closeConversationMenu();
+      renderMessages();
+      renderConversations(searchInput.value);
+      return;
+    }
     const ok = await showConfirmDialog({
       title: "Block user?",
       message: conversation.name,
@@ -3054,9 +3163,13 @@ function openConversationMenu(anchor, conversation, position = null) {
       danger: true
     });
     if (!ok) return;
-    conversation.blocked = true;
-    afterConversationHidden(conversation);
+    await setConversationBlockState(conversation, true);
+    afterConversationHidden(conversation, { keepOpen: true });
+    renderMessages();
   }, { danger: true });
+  if (conversation.blockedByThem && !conversation.blockedByMe) {
+    blockButton.disabled = true;
+  }
 
   const deleteButton = createConversationMenuButton("Delete", iconPaths.trash, async () => {
     const ok = await showConfirmDialog({
@@ -3212,6 +3325,26 @@ function friendRowsForGroup() {
   });
 }
 
+function groupAdmins(conversation) {
+  return new Set(conversation?.admins?.length ? conversation.admins : [conversation?.adminId].filter(Boolean));
+}
+
+function currentUserIsGroupAdmin(conversation) {
+  return groupAdmins(conversation).has(firebaseUser?.uid);
+}
+
+function pendingGroupRequests(conversation) {
+  return (conversation?.pendingAddRequests || []).filter((request) => request?.status === "pending");
+}
+
+function refreshGroupRequestBadge() {
+  const count = currentConversation?.isGroup ? pendingGroupRequests(currentConversation).length : 0;
+  groupRequestBadge.hidden = count <= 0;
+  groupRequestBadge.textContent = String(count);
+  chatGroupRequestsButton.hidden = !currentConversation?.isGroup || count <= 0;
+  chatGroupRequestsButton.textContent = count ? `Requests (${count})` : "Requests";
+}
+
 async function saveGroupMembers(group, name, memberIds) {
   const participants = Array.from(new Set([firebaseUser.uid, ...memberIds]));
   const chatId = group?.chatId || groupId();
@@ -3226,6 +3359,9 @@ async function saveGroupMembers(group, name, memberIds) {
     updatedAt: firestoreServerTimestamp(),
     createdAt: group?.chatId ? group.createdAt || firestoreServerTimestamp() : firestoreServerTimestamp()
   };
+  if (group?.pendingAddRequests) {
+    payload.pendingAddRequests = pendingGroupRequests(group).filter((request) => !memberIds.includes(request.uid));
+  }
   await setDoc(doc(db, "chats", chatId), payload, { merge: true });
   return { chatId, participants, payload };
 }
@@ -3235,10 +3371,8 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
   closeHomeOptions();
   closeChatOptions();
   if (!firebaseUser) return;
-  if (group && group.adminId && group.adminId !== firebaseUser.uid) {
-    window.alert("Only group admin members add/remove korte parbe.");
-    return;
-  }
+  const isExistingGroup = !!group?.isGroup;
+  const isGroupAdmin = !isExistingGroup || currentUserIsGroupAdmin(group);
 
   const friends = friendRowsForGroup();
   if (!friends.length) {
@@ -3255,7 +3389,7 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
   dialog.addEventListener("click", (event) => event.stopPropagation());
 
   const heading = document.createElement("h3");
-  heading.textContent = group ? "Manage group" : "Add group";
+  heading.textContent = isExistingGroup ? (isGroupAdmin ? "Add member" : "Add request") : "Add group";
 
   const nameLabel = document.createElement("label");
   const nameText = document.createElement("span");
@@ -3272,13 +3406,17 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
   const members = document.createElement("div");
   members.className = "group-member-list";
   const currentMembers = new Set(group?.participants || group?.memberIds || []);
-  friends.forEach((friend) => {
+  const pendingIds = new Set(pendingGroupRequests(group).map((request) => request.uid));
+  const selectableFriends = isExistingGroup
+    ? friends.filter((friend) => !currentMembers.has(friend.userId) && !pendingIds.has(friend.userId))
+    : friends;
+  selectableFriends.forEach((friend) => {
     const row = document.createElement("label");
     row.className = "group-member-row";
     const input = document.createElement("input");
     input.type = "checkbox";
     input.value = friend.userId;
-    input.checked = !group || currentMembers.has(friend.userId);
+    input.checked = !isExistingGroup;
     const avatar = document.createElement("img");
     avatar.src = friend.avatar;
     avatar.alt = "";
@@ -3287,6 +3425,12 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
     row.append(input, avatar, name);
     members.appendChild(row);
   });
+  if (!selectableFriends.length) {
+    const empty = document.createElement("p");
+    empty.className = "group-dialog-message";
+    empty.textContent = "Add korar moto new friend nai.";
+    members.appendChild(empty);
+  }
 
   const message = document.createElement("p");
   message.className = "group-dialog-message";
@@ -3298,7 +3442,7 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
   cancelButton.textContent = "Cancel";
   const saveButton = document.createElement("button");
   saveButton.type = "button";
-  saveButton.textContent = group ? "Save" : "Create";
+  saveButton.textContent = isExistingGroup ? (isGroupAdmin ? "Add" : "Send request") : "Create";
   saveButton.className = "confirm-primary";
 
   const close = () => {
@@ -3316,8 +3460,33 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
     }
     setAuthLoading(saveButton, true);
     try {
-      const result = await saveGroupMembers(group, name, selected);
+      if (isExistingGroup && !isGroupAdmin) {
+        const existingRequests = pendingGroupRequests(group);
+        const selectedRequests = selected.map((uid) => {
+          const friend = friends.find((item) => item.userId === uid);
+          return {
+            uid,
+            name: friend?.name || "User",
+            avatar: friend?.avatar || defaultAvatar,
+            number: friend?.number || "",
+            requesterId: firebaseUser.uid,
+            requesterName: myProfile.name || "Member",
+            status: "pending",
+            requestedAt: Date.now()
+          };
+        });
+        group.pendingAddRequests = [...existingRequests, ...selectedRequests];
+        await updateGroup(group, { pendingAddRequests: group.pendingAddRequests });
+        refreshGroupRequestBadge();
+        close();
+        return;
+      }
+      const memberIds = isExistingGroup
+        ? Array.from(new Set([...(group.participants || group.memberIds || []), ...selected]))
+        : selected;
+      const result = await saveGroupMembers(group, name, memberIds);
       const conversation = group || groupToConversation(result.chatId, result.payload);
+      const participants = isExistingGroup ? memberIds : result.participants;
       Object.assign(conversation, {
         id: result.chatId,
         chatId: result.chatId,
@@ -3325,10 +3494,11 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
         name,
         adminId: result.payload.adminId,
         admins: result.payload.admins,
-        participants: result.participants,
-        memberIds: result.participants,
-        status: `${result.participants.length} members`,
-        avatar: defaultAvatar,
+        participants,
+        memberIds: participants,
+        pendingAddRequests: result.payload.pendingAddRequests || group?.pendingAddRequests || [],
+        status: `${participants.length} members`,
+        avatar: group?.avatar || defaultAvatar,
         messages: group?.messages || [],
         messagesLoaded: !!group?.messagesLoaded,
         lastMessage: group?.lastMessage || "",
@@ -3338,6 +3508,7 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
       close();
       renderConversations(searchInput.value);
       openConversation(conversation.id);
+      refreshGroupRequestBadge();
     } catch (error) {
       message.textContent = error.message || "Group save hoy nai";
     } finally {
@@ -3346,7 +3517,11 @@ function openAddGroup(group = currentConversation?.isGroup ? currentConversation
   });
 
   actions.append(cancelButton, saveButton);
-  dialog.append(heading, nameLabel, memberTitle, members, message, actions);
+  if (isExistingGroup) {
+    dialog.append(heading, memberTitle, members, message, actions);
+  } else {
+    dialog.append(heading, nameLabel, memberTitle, members, message, actions);
+  }
   overlay.appendChild(dialog);
   phoneShell.appendChild(overlay);
   activeConfirmDialog = overlay;
@@ -3371,8 +3546,9 @@ function closeUserFinder() {
 }
 
 function updateUserSearchButton() {
-  const hasNumber = userSearchNumber.value.trim().length > 0;
-  userSearchButton.classList.toggle("active", hasNumber);
+  const cleanValue = sanitizeUserSearchValue(userSearchNumber.value);
+  if (userSearchNumber.value !== cleanValue) userSearchNumber.value = cleanValue;
+  userSearchButton.classList.toggle("active", cleanValue.length > 0);
 }
 
 function findConversationByUser(user) {
@@ -3416,6 +3592,7 @@ function isAdminAccount(user = currentUser) {
 
 function canMessageConversation(conversation) {
   if (!currentUser || !conversation) return false;
+  if (conversation.blocked) return false;
   if (conversation.isGroup) return true;
   if (isAdminAccount()) return true;
   if (currentUser.profile?.restricted && conversation.number !== "0") return false;
@@ -3424,6 +3601,12 @@ function canMessageConversation(conversation) {
 }
 
 function restrictedMessage(conversation) {
+  if (conversation?.blockedByThem) {
+    return "This user blocked you. You cannot message this user.";
+  }
+  if (conversation?.blockedByMe) {
+    return "You blocked this user. Unblock to send messages.";
+  }
   if (currentUser?.profile?.restricted && conversation?.number !== "0") {
     return "Your account is restricted. You can only message WebChat admin support right now.";
   }
@@ -3462,25 +3645,43 @@ function renderUserSearchResult(user) {
 }
 
 async function searchUserByNumber() {
-  const number = normalizePhoneNumber(userSearchNumber.value);
+  const searchValue = sanitizeUserSearchValue(userSearchNumber.value);
+  userSearchNumber.value = searchValue;
+  const isUsernameSearch = searchValue.startsWith("@");
+  const number = isUsernameSearch ? "" : normalizeBangladeshPhoneNumber(searchValue) || normalizePhoneNumber(searchValue);
   userSearchResult.classList.remove("active");
   userSearchResult.innerHTML = "";
   userSearchMessage.textContent = "";
   setAuthLoading(userSearchButton, true);
 
   try {
-    if (!number) {
-      userSearchMessage.textContent = "Number dao";
+    if (!searchValue || (!isUsernameSearch && !number)) {
+      userSearchMessage.textContent = "Number ba @username dao";
       return;
     }
 
-    if (currentUser && number === normalizePhoneNumber(currentUser.number)) {
+    if (!isUsernameSearch && currentUser && number === normalizePhoneNumber(currentUser.number)) {
       userSearchMessage.textContent = "Eta tomar nijer account";
       return;
     }
 
-    const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(number)));
+    if (isUsernameSearch) {
+      if (currentUser?.profile?.username?.toLowerCase() === searchValue) {
+        userSearchMessage.textContent = "Eta tomar nijer account";
+        return;
+      }
+      const usersSnapshot = await getDocs(query(collection(db, "users"), where("username", "==", searchValue)));
+      const userDoc = usersSnapshot.docs[0];
+      if (!userDoc) {
+        userSearchMessage.textContent = "Ei username-er user pawa jay nai";
+        return;
+      }
+      const user = normalizeUserDoc(userDoc.id, userDoc.data());
+      renderUserSearchResult(user);
+      return;
+    }
 
+    const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(number)));
     if (!numberSnapshot.exists()) {
       userSearchMessage.textContent = "Ei number-er user pawa jay nai";
       return;
@@ -3495,13 +3696,41 @@ async function searchUserByNumber() {
 }
 
 function visibleConversations() {
-  return conversations.filter((conversation) => !conversation.archived && !conversation.blocked);
+  return conversations.filter((conversation) => !conversation.archived);
 }
 
-function afterConversationHidden(conversation) {
+async function setConversationArchiveState(conversation, archived) {
+  conversation.archived = archived;
+  if (conversation.chatId && firebaseUser) {
+    await setDoc(doc(db, "chats", conversation.chatId), {
+      archivedBy: {
+        [firebaseUser.uid]: archived
+      }
+    }, { merge: true });
+  }
+}
+
+async function setConversationBlockState(conversation, blocked) {
+  conversation.blockedBy = {
+    ...(conversation.blockedBy || {}),
+    [firebaseUser.uid]: blocked
+  };
+  conversation.blockedByMe = blocked;
+  conversation.blockedByThem = !!(conversation.userId && conversation.blockedBy?.[conversation.userId]);
+  conversation.blocked = conversation.blockedByMe || conversation.blockedByThem;
+  if (conversation.chatId && firebaseUser) {
+    await setDoc(doc(db, "chats", conversation.chatId), {
+      blockedBy: {
+        [firebaseUser.uid]: blocked
+      }
+    }, { merge: true });
+  }
+}
+
+function afterConversationHidden(conversation, options = {}) {
   closeConversationMenu();
   const visible = visibleConversations();
-  if (currentConversation?.id === conversation.id) {
+  if (!options.keepOpen && currentConversation?.id === conversation.id) {
     currentConversation = visible[0] || conversations[0];
     if (currentConversation) renderMessages();
   }
@@ -3599,10 +3828,12 @@ function renderSavedList(type) {
     const action = document.createElement("button");
     action.type = "button";
     action.textContent = actionText;
-    action.addEventListener("click", () => {
-      conversation[key] = false;
+    action.addEventListener("click", async () => {
+      if (type === "archived") await setConversationArchiveState(conversation, false);
+      else await setConversationBlockState(conversation, false);
       renderSavedList(type);
       renderConversations(searchInput.value);
+      if (currentConversation?.id === conversation.id) renderMessages();
     });
 
     row.append(avatar, text, action);
@@ -4017,8 +4248,98 @@ function openAdminUserMenu(anchor, user) {
   activeConversationMenuAnchor = anchor;
 }
 
+function getMessageTimeMs(message) {
+  return message?.createdAtMs || message?.localOrder || 0;
+}
+
+function formatClockTime(timeMs) {
+  if (!timeMs) return "";
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true
+  }).format(new Date(timeMs));
+}
+
+function formatCalendarDate(timeMs) {
+  if (!timeMs) return "";
+  const options = {
+    month: "short",
+    day: "numeric"
+  };
+  if (new Date(timeMs).getFullYear() !== new Date().getFullYear()) {
+    options.year = "numeric";
+  }
+  return new Intl.DateTimeFormat("en-US", options).format(new Date(timeMs));
+}
+
+function formatWeekday(timeMs) {
+  if (!timeMs) return "";
+  return new Intl.DateTimeFormat("en-US", { weekday: "long" }).format(new Date(timeMs));
+}
+
+function isSameCalendarDay(firstTime, secondTime) {
+  if (!firstTime || !secondTime) return false;
+  const first = new Date(firstTime);
+  const second = new Date(secondTime);
+  return first.getFullYear() === second.getFullYear()
+    && first.getMonth() === second.getMonth()
+    && first.getDate() === second.getDate();
+}
+
+function messageDividerLabel(message, previousTimeMs) {
+  const timeMs = getMessageTimeMs(message);
+  if (!timeMs) return previousTimeMs ? "" : (message.date || "Today");
+  const now = Date.now();
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const messageStart = new Date(timeMs);
+  messageStart.setHours(0, 0, 0, 0);
+  const dayDiff = Math.floor((todayStart.getTime() - messageStart.getTime()) / (24 * 60 * 60 * 1000));
+  const oneHour = 60 * 60 * 1000;
+
+  if (!previousTimeMs) {
+    if (isSameCalendarDay(timeMs, now)) return "Today";
+    if (dayDiff === 1) return "Yesterday";
+    return dayDiff < 7 ? formatWeekday(timeMs) : formatCalendarDate(timeMs);
+  }
+  if (timeMs - previousTimeMs < oneHour && isSameCalendarDay(timeMs, previousTimeMs)) return "";
+  if (isSameCalendarDay(timeMs, previousTimeMs)) return formatClockTime(timeMs);
+  if (dayDiff === 1) return "Yesterday";
+  return dayDiff < 7 ? formatWeekday(timeMs) : formatCalendarDate(timeMs);
+}
+
+function fullMessageTimeLabel(message) {
+  const timeMs = getMessageTimeMs(message);
+  if (timeMs) {
+    return formatClockTime(timeMs);
+  }
+  return message.time || "Now";
+}
+
+function createChatProfileIntro() {
+  const intro = document.createElement("button");
+  intro.type = "button";
+  intro.className = "chat-profile-intro";
+  intro.addEventListener("click", openCurrentChatProfile);
+
+  const image = document.createElement("img");
+  image.src = currentConversation.avatar || defaultAvatar;
+  image.alt = "";
+
+  const name = document.createElement("strong");
+  name.textContent = currentConversation.name;
+
+  const status = document.createElement("span");
+  status.textContent = currentConversation.isGroup ? currentConversation.status : "Profile";
+
+  intro.append(image, name, status);
+  return intro;
+}
+
 function renderMessages() {
   if (!currentConversation) return;
+  refreshGroupRequestBadge();
   chatName.textContent = "";
   chatName.appendChild(document.createTextNode(currentConversation.name));
   if (currentConversation.verified) chatName.appendChild(createVerifiedBadge());
@@ -4035,6 +4356,14 @@ function renderMessages() {
   chatAvatar.alt = currentConversation.name;
   chatAvatarWrap.classList.toggle("active", currentConversation.status === "Active now");
   chatAvatarWrap.classList.remove("offline");
+  messageForm.classList.toggle("blocked", !!currentConversation.blocked);
+  if (blockedComposer) blockedComposer.hidden = !currentConversation.blocked;
+  if (blockedComposerText && currentConversation.blocked) {
+    blockedComposerText.textContent = currentConversation.blockedByThem
+      ? "You are blocked."
+      : "This chat is blocked.";
+  }
+  if (blockedComposerUnblock) blockedComposerUnblock.hidden = !currentConversation.blockedByMe;
 
   if (currentConversation.chatId && !currentConversation.messagesLoaded) {
     messages.innerHTML = `<div class="messages-state">Loading chat...</div>`;
@@ -4050,10 +4379,11 @@ function renderMessages() {
   }));
 
   messages.replaceChildren();
-  const divider = document.createElement("div");
-  divider.className = "time-divider";
-  divider.textContent = "Today";
-  messages.appendChild(divider);
+  messages.appendChild(createChatProfileIntro());
+  if (!currentConversation.messages.length) {
+    updateJumpBottomButton();
+    return;
+  }
   const lastOwnMessage = [...currentConversation.messages].reverse().find((message) => message.from === "me");
   applySeenState(currentConversation);
   applyDeliveryState(currentConversation);
@@ -4061,10 +4391,22 @@ function renderMessages() {
     return message.from === "me" && message.status === "seen";
   });
 
+  let previousMessageTime = 0;
   currentConversation.messages.forEach((message) => {
+    const messageTimeMs = getMessageTimeMs(message);
+    const dividerLabel = messageDividerLabel(message, previousMessageTime);
+    if (dividerLabel) {
+      const divider = document.createElement("div");
+      divider.className = "time-divider";
+      divider.textContent = dividerLabel;
+      messages.appendChild(divider);
+    }
+    previousMessageTime = messageTimeMs || previousMessageTime;
+
     const reusableRow = message.type === "voice" ? reusableVoiceRows.get(message.id) : null;
     if (reusableRow) {
       reusableRow.className = `message-row ${message.from} voice-row`;
+      reusableRow.classList.toggle("show-time", message.id === activeMessageTimeId);
       messages.appendChild(reusableRow);
       return;
     }
@@ -4073,13 +4415,16 @@ function renderMessages() {
     row.dataset.messageId = message.id;
     if (message.type === "voice") row.classList.add("voice-row");
     if (message.from === "them") {
+      const senderProfile = currentConversation.isGroup ? memberProfileForMessage(message) : currentConversation;
       const avatar = document.createElement("img");
       avatar.className = "message-avatar";
-      avatar.src = currentConversation.avatar;
-      avatar.alt = "";
+      avatar.src = senderProfile.avatar || defaultAvatar;
+      avatar.alt = senderProfile.name || "";
       avatar.addEventListener("click", (event) => {
         event.stopPropagation();
-        openFriendProfile(currentConversation);
+        openFriendProfile(currentConversation.isGroup
+          ? conversationForMemberProfile(message.senderId, senderProfile)
+          : currentConversation);
       });
       row.appendChild(avatar);
     }
@@ -4130,7 +4475,8 @@ function renderMessages() {
         openPhotoViewer(message);
         return;
       }
-      row.classList.toggle("show-time");
+      activeMessageTimeId = activeMessageTimeId === message.id ? null : message.id;
+      renderMessages();
     });
     bubble.addEventListener("dblclick", (event) => {
       event.preventDefault();
@@ -4166,7 +4512,8 @@ function renderMessages() {
     });
     const time = document.createElement("span");
     time.className = "message-time";
-    time.textContent = `${message.date} at ${message.time}`;
+    time.textContent = fullMessageTimeLabel(message);
+    row.classList.toggle("show-time", message.id === activeMessageTimeId);
     row.appendChild(bubble);
     const isLastSeen = message.id === lastSeenOwnMessage?.id;
     const isLastPending = message.id === lastOwnMessage?.id && message.status !== "seen";
@@ -4265,10 +4612,21 @@ function createMessageStatus(message) {
   if (message.status === "pending") {
     status.textContent = "Pending";
   } else if (message.status === "seen") {
-    const image = document.createElement("img");
-    image.src = currentConversation.avatar;
-    image.alt = "Seen";
-    status.appendChild(image);
+    if (currentConversation?.isGroup && message.seenByMembers?.length) {
+      message.seenByMembers.slice(0, 4).forEach((uid) => {
+        const profile = getCachedMemberProfile(uid);
+        if (!profile) requestMemberProfile(uid);
+        const image = document.createElement("img");
+        image.src = profile?.avatar || defaultAvatar;
+        image.alt = profile?.name || "Seen";
+        status.appendChild(image);
+      });
+    } else {
+      const image = document.createElement("img");
+      image.src = currentConversation.avatar;
+      image.alt = "Seen";
+      status.appendChild(image);
+    }
   } else {
     const tickCount = message.status === "delivered" ? 2 : 1;
     for (let index = 0; index < tickCount; index += 1) {
@@ -4643,6 +5001,75 @@ function getFriendProfile(conversation) {
   };
 }
 
+function cacheMemberProfile(uid, profile = {}) {
+  if (!uid) return;
+  memberProfileCache.set(uid, {
+    uid,
+    name: profile.name || profile.profile?.name || "Member",
+    avatar: profile.avatar || profile.profile?.avatar || defaultAvatar,
+    number: profile.number || profile.profile?.number || "",
+    username: profile.username || profile.profile?.username || `@${profile.number || uid}.webchat`,
+    bio: profile.bio || profile.profile?.bio || "",
+    verified: !!(profile.verified || profile.profile?.verified)
+  });
+}
+
+function getCachedMemberProfile(uid) {
+  if (!uid) return null;
+  if (uid === firebaseUser?.uid) {
+    cacheMemberProfile(uid, myProfile);
+  }
+  const existing = conversations.find((item) => item.userId === uid);
+  if (existing) cacheMemberProfile(uid, existing);
+  return memberProfileCache.get(uid) || null;
+}
+
+function requestMemberProfile(uid) {
+  if (!uid || memberProfileCache.has(uid) || memberProfileLoadRequests.has(uid)) return;
+  memberProfileLoadRequests.add(uid);
+  getDoc(doc(db, "users", uid))
+    .then((snapshot) => {
+      if (!snapshot.exists()) return;
+      const user = normalizeUserDoc(uid, snapshot.data());
+      cacheMemberProfile(uid, user.profile);
+      if (currentConversation?.isGroup) renderMessages();
+    })
+    .catch(() => {})
+    .finally(() => memberProfileLoadRequests.delete(uid));
+}
+
+function memberProfileForMessage(message) {
+  const uid = message?.senderId;
+  const direct = {
+    name: message?.senderName,
+    avatar: message?.senderAvatar
+  };
+  if (direct.name || direct.avatar) {
+    cacheMemberProfile(uid, direct);
+  }
+  const cached = getCachedMemberProfile(uid);
+  if (!cached) requestMemberProfile(uid);
+  return cached || { uid, name: direct.name || "Member", avatar: direct.avatar || defaultAvatar };
+}
+
+function conversationForMemberProfile(uid, fallback = {}) {
+  const existing = conversations.find((item) => item.userId === uid);
+  if (existing) return existing;
+  const cached = getCachedMemberProfile(uid) || fallback;
+  return {
+    id: `member-${uid}`,
+    userId: uid,
+    name: cached.name || "Member",
+    status: "",
+    avatar: cached.avatar || defaultAvatar,
+    bio: cached.bio || "",
+    username: cached.username || `@${cached.number || uid}.webchat`,
+    number: cached.number || "",
+    verified: !!cached.verified,
+    messages: []
+  };
+}
+
 function isGroupConversation(conversation, profile = null) {
   return !!(
     conversation?.isGroup ||
@@ -4757,16 +5184,16 @@ function openFriendProfile(conversation, options = {}) {
   const isGroup = isGroupConversation(conversation, profile);
   if (isGroup) conversation.isGroup = true;
   setImageAfterLoad(friendProfilePhoto, profile.avatar, profile.name);
-  const isGroupAdmin = isGroup && (conversation.admins || [conversation.adminId]).includes(firebaseUser?.uid);
+  const canEditGroup = isGroup && (conversation.participants || conversation.memberIds || []).includes(firebaseUser?.uid);
   friendPhotoWrap.classList.toggle("active", !isGroup && profile.status === "Active now");
   friendPhotoWrap.classList.remove("offline");
   setVerifiedName(friendProfileName, profile.name, profile.verified);
   friendProfileStatus.textContent = "";
-  friendProfileBio.textContent = profile.bio;
-  friendProfileUsername.textContent = profile.username;
+  friendProfileBio.textContent = isGroup ? (profile.bio || "Group chat") : profile.bio;
+  friendProfileUsername.textContent = isGroup ? (profile.username || "@group.webchat") : profile.username;
   friendProfileNumber.textContent = profile.number;
-  friendProfileBio.closest("button").hidden = isGroup;
-  friendProfileUsername.closest("button").hidden = isGroup;
+  friendProfileBio.closest("button").hidden = false;
+  friendProfileUsername.closest("button").hidden = false;
   friendProfileNumber.closest("button").hidden = isGroup;
   renderGroupMembers(conversation);
   friendProfileBlockButton.hidden = isGroup || activeFriendProfileFromAdmin;
@@ -4775,10 +5202,15 @@ function openFriendProfile(conversation, options = {}) {
   friendProfilePasswordButton.hidden = isGroup || !isAdminAccount();
   friendProfileDeleteButton.hidden = !activeFriendProfileFromAdmin && !conversation.chatId;
   friendProfileDeleteButton.textContent = isGroup ? "Leave" : "Delete";
+  friendProfileBlockButton.textContent = conversation.blockedByMe ? "Unblock user" : "Block user";
   friendProfileVerifyButton.textContent = profile.verified ? "Remove verify badge" : "Give verify badge";
   friendProfileRestrictButton.textContent = conversation.restricted ? "Unrestrict user" : "Restrict user";
-  friendPhotoWrap.classList.toggle("editable", isGroupAdmin);
-  friendProfileName.classList.toggle("editable", isGroupAdmin);
+  friendProfilePanel.classList.remove("details-editing");
+  friendProfileName.closest(".profile-name-row")?.classList.remove("editing");
+  friendProfileEditButton.hidden = !canEditGroup;
+  friendProfileEditButton.textContent = "Edit";
+  friendPhotoWrap.classList.toggle("editable", canEditGroup);
+  friendProfileName.classList.toggle("editable", canEditGroup);
   friendProfileOverlay.classList.add("active");
   friendProfileOverlay.setAttribute("aria-hidden", "false");
   friendProfileCloseButton.focus();
@@ -4799,19 +5231,27 @@ async function loadGroupMemberProfiles(conversation) {
   const ids = conversation?.participants || conversation?.memberIds || [];
   const rows = await Promise.all(ids.map(async (uid) => {
     if (uid === firebaseUser?.uid) {
-      return {
+      const ownProfile = {
         uid,
         name: myProfile.name || "You",
         avatar: myProfile.avatar || defaultAvatar
       };
+      cacheMemberProfile(uid, ownProfile);
+      return ownProfile;
     }
     const existing = conversations.find((item) => item.userId === uid);
-    if (existing) return { uid, name: existing.name, avatar: existing.avatar };
+    if (existing) {
+      const profile = { uid, name: existing.name, avatar: existing.avatar, number: existing.number, username: existing.username, bio: existing.bio, verified: existing.verified };
+      cacheMemberProfile(uid, profile);
+      return profile;
+    }
     try {
       const snapshot = await getDoc(doc(db, "users", uid));
       if (!snapshot.exists()) return { uid, name: "Member", avatar: defaultAvatar };
       const user = normalizeUserDoc(uid, snapshot.data());
-      return { uid, name: user.profile.name, avatar: user.profile.avatar };
+      const profile = { uid, name: user.profile.name, avatar: user.profile.avatar, number: user.profile.number, username: user.profile.username, bio: user.profile.bio, verified: user.profile.verified };
+      cacheMemberProfile(uid, profile);
+      return profile;
     } catch (error) {
       return { uid, name: "Member", avatar: defaultAvatar };
     }
@@ -4902,6 +5342,7 @@ async function openAllGroupMembers() {
 }
 
 async function updateGroup(conversation, update) {
+  Object.assign(conversation, update);
   await setDoc(doc(db, "chats", conversation.chatId), {
     ...update,
     updatedAt: firestoreServerTimestamp()
@@ -4927,20 +5368,91 @@ async function kickGroupMember(conversation, uid) {
 
 async function editActiveGroupName() {
   if (!activeFriendProfile?.isGroup) return;
-  const admins = activeFriendProfile.admins || [activeFriendProfile.adminId];
-  if (!admins.includes(firebaseUser?.uid)) return;
-  const nextName = window.prompt("Group name", activeFriendProfile.name);
-  if (!nextName?.trim()) return;
-  activeFriendProfile.name = nextName.trim();
-  await updateGroup(activeFriendProfile, { groupName: activeFriendProfile.name });
-  openFriendProfile(activeFriendProfile);
-  renderConversations(searchInput.value);
+  if (!friendProfilePanel.classList.contains("details-editing")) return;
+  if (!(activeFriendProfile.participants || activeFriendProfile.memberIds || []).includes(firebaseUser?.uid)) return;
+  const row = friendProfileName.closest(".profile-name-row");
+  friendProfileNameInput.value = activeFriendProfile.name || "";
+  row?.classList.add("editing");
+  friendProfileNameInput.focus();
+  friendProfileNameInput.select();
+}
+
+async function saveActiveGroupName() {
+  if (!activeFriendProfile?.isGroup) return;
+  const nextName = friendProfileNameInput.value.trim();
+  if (!nextName) return;
+  activeFriendProfile.name = nextName;
+  friendProfileName.textContent = nextName;
+  friendProfileName.closest(".profile-name-row")?.classList.remove("editing");
+  try {
+    await updateGroup(activeFriendProfile, { groupName: nextName });
+    chatName.textContent = nextName;
+    renderConversations(searchInput.value);
+  } catch (error) {
+    window.alert("Group name update hoy nai. Firebase rules check koro.");
+    openFriendProfile(activeFriendProfile);
+  }
+}
+
+function canEditActiveGroup() {
+  if (!activeFriendProfile?.isGroup) return false;
+  if (!friendProfilePanel.classList.contains("details-editing")) return false;
+  return (activeFriendProfile.participants || activeFriendProfile.memberIds || []).includes(firebaseUser?.uid);
+}
+
+function editActiveGroupField(button) {
+  if (!canEditActiveGroup() || button.classList.contains("editing")) return;
+  const field = button.dataset.groupField;
+  if (!field || !["bio", "username"].includes(field)) return;
+
+  const valueNode = button.querySelector("strong");
+  const input = document.createElement("input");
+  input.className = "profile-field-input";
+  input.value = activeFriendProfile[field] || (field === "bio" ? "Group chat" : "@group.webchat");
+  input.setAttribute("aria-label", field);
+  button.classList.add("editing");
+  valueNode.replaceWith(input);
+  input.focus();
+  input.select();
+
+  let saved = false;
+  const save = async () => {
+    if (saved) return;
+    saved = true;
+    let nextValue = input.value.trim();
+    if (!nextValue) nextValue = field === "bio" ? "Group chat" : "@group.webchat";
+    if (field === "username" && !nextValue.startsWith("@")) nextValue = `@${nextValue}`;
+    const strong = document.createElement("strong");
+    strong.id = valueNode.id;
+    strong.textContent = nextValue;
+    input.replaceWith(strong);
+    button.classList.remove("editing");
+    activeFriendProfile[field] = nextValue;
+    try {
+      await updateGroup(activeFriendProfile, { [field]: nextValue });
+      renderConversations(searchInput.value);
+    } catch (error) {
+      window.alert("Group update hoy nai. Firebase rules check koro.");
+      openFriendProfile(activeFriendProfile);
+    }
+  };
+
+  input.addEventListener("blur", save);
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      save();
+    }
+    if (event.key === "Escape") {
+      openFriendProfile(activeFriendProfile);
+    }
+  });
 }
 
 async function changeActiveGroupPhoto(event) {
   if (!activeFriendProfile?.isGroup) return;
-  const admins = activeFriendProfile.admins || [activeFriendProfile.adminId];
-  if (!admins.includes(firebaseUser?.uid)) return;
+  if (!friendProfilePanel.classList.contains("details-editing")) return;
+  if (!(activeFriendProfile.participants || activeFriendProfile.memberIds || []).includes(firebaseUser?.uid)) return;
   const file = event.target.files?.[0];
   event.target.value = "";
   if (!file) return;
@@ -4959,6 +5471,14 @@ async function changeActiveGroupPhoto(event) {
 async function blockActiveFriend() {
   if (!activeFriendProfile) return;
   const conversation = activeFriendProfile;
+  if (conversation.blockedByMe) {
+    await setConversationBlockState(conversation, false);
+    closeFriendProfile();
+    renderMessages();
+    renderConversations(searchInput.value);
+    return;
+  }
+  if (conversation.blockedByThem) return;
   const ok = await showConfirmDialog({
     title: "Block user?",
     message: conversation.name,
@@ -4966,9 +5486,10 @@ async function blockActiveFriend() {
     danger: true
   });
   if (!ok) return;
-  conversation.blocked = true;
+  await setConversationBlockState(conversation, true);
   closeFriendProfile();
-  afterConversationHidden(conversation);
+  afterConversationHidden(conversation, { keepOpen: true });
+  renderMessages();
 }
 
 function closeFriendProfile() {
@@ -5157,6 +5678,8 @@ function closeProfile() {
 }
 
 function toggleChatOptions() {
+  chatAddMemberButton.hidden = !currentConversation?.isGroup;
+  refreshGroupRequestBadge();
   const isOpen = chatOptionsMenu.classList.toggle("active");
   chatOptionsMenu.setAttribute("aria-hidden", String(!isOpen));
 }
@@ -5172,6 +5695,98 @@ async function toggleMuteChat() {
   closeChatOptions();
   renderMessages();
   renderConversations(searchInput.value);
+}
+
+function addMemberToCurrentGroup() {
+  if (!currentConversation?.isGroup) return;
+  closeChatOptions();
+  openAddGroup(currentConversation);
+}
+
+function openGroupRequests() {
+  if (!currentConversation?.isGroup) return;
+  closeChatOptions();
+  const conversation = currentConversation;
+  const requests = pendingGroupRequests(conversation);
+  const isAdmin = currentUserIsGroupAdmin(conversation);
+
+  const overlay = document.createElement("section");
+  overlay.className = "confirm-overlay group-overlay active";
+  overlay.setAttribute("aria-hidden", "false");
+  const dialog = document.createElement("article");
+  dialog.className = "confirm-dialog group-dialog";
+  dialog.addEventListener("click", (event) => event.stopPropagation());
+  const heading = document.createElement("h3");
+  heading.textContent = "Add requests";
+  const list = document.createElement("div");
+  list.className = "group-member-full-list";
+
+  if (!requests.length) {
+    const empty = document.createElement("p");
+    empty.className = "group-dialog-message";
+    empty.textContent = "Kono request nai.";
+    list.appendChild(empty);
+  }
+
+  requests.forEach((request) => {
+    const row = document.createElement("div");
+    row.className = "group-profile-member";
+    const avatar = document.createElement("img");
+    avatar.src = request.avatar || defaultAvatar;
+    avatar.alt = "";
+    const text = document.createElement("span");
+    text.textContent = request.name || "User";
+    row.append(avatar, text);
+    if (request.requesterName) {
+      const note = document.createElement("small");
+      note.className = "group-request-note";
+      note.textContent = `by ${request.requesterName}`;
+      row.appendChild(note);
+    }
+    if (isAdmin) {
+      const acceptButton = document.createElement("button");
+      acceptButton.type = "button";
+      acceptButton.textContent = "Accept";
+      acceptButton.addEventListener("click", async () => {
+        const participants = Array.from(new Set([...(conversation.participants || conversation.memberIds || []), request.uid]));
+        const pendingAddRequests = pendingGroupRequests(conversation).filter((item) => item.uid !== request.uid);
+        conversation.participants = participants;
+        conversation.memberIds = participants;
+        conversation.pendingAddRequests = pendingAddRequests;
+        conversation.status = `${participants.length} members`;
+        await updateGroup(conversation, { participants, pendingAddRequests });
+        overlay.remove();
+        refreshGroupRequestBadge();
+        renderMessages();
+        renderConversations(searchInput.value);
+      });
+      const rejectButton = document.createElement("button");
+      rejectButton.type = "button";
+      rejectButton.textContent = "Reject";
+      rejectButton.className = "danger";
+      rejectButton.addEventListener("click", async () => {
+        const pendingAddRequests = pendingGroupRequests(conversation).filter((item) => item.uid !== request.uid);
+        conversation.pendingAddRequests = pendingAddRequests;
+        await updateGroup(conversation, { pendingAddRequests });
+        overlay.remove();
+        refreshGroupRequestBadge();
+        renderMessages();
+      });
+      row.append(acceptButton, rejectButton);
+    }
+    list.appendChild(row);
+  });
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "confirm-primary";
+  closeButton.textContent = "Close";
+  const close = () => overlay.remove();
+  closeButton.addEventListener("click", close);
+  overlay.addEventListener("click", close);
+  dialog.append(heading, list, closeButton);
+  overlay.appendChild(dialog);
+  phoneShell.appendChild(overlay);
 }
 
 async function clearChat() {
@@ -5266,6 +5881,8 @@ async function saveOutgoingRemoteMessage(conversation, messageData, lastMessage,
     : [firebaseUser.uid, conversation.userId];
   const remoteMessageData = {
     ...messageData,
+    senderName: myProfile.name || "",
+    senderAvatar: myProfile.avatar || "",
     encrypted: true,
     text: messageData.type === "photo" ? "Photo" : "Message",
     textCipher: await encryptChatValue(conversation.chatId, messageData.text || ""),
@@ -5980,6 +6597,14 @@ function openMessageActions(row, message) {
   const menu = document.createElement("div");
   menu.className = "message-actions active";
 
+  const replyButton = document.createElement("button");
+  replyButton.type = "button";
+  replyButton.textContent = "Reply";
+  replyButton.addEventListener("click", () => {
+    setReplyMessage(message);
+    closeMessageActions();
+  });
+
   const copyButton = document.createElement("button");
   copyButton.type = "button";
   copyButton.textContent = "Copy";
@@ -5996,6 +6621,7 @@ function openMessageActions(row, message) {
 
   if (message.from === "me") {
     if (message.type && message.type !== "text") {
+      menu.appendChild(replyButton);
       menu.appendChild(copyButton);
       menu.appendChild(removeButton);
       row.appendChild(menu);
@@ -6008,6 +6634,7 @@ function openMessageActions(row, message) {
     menu.appendChild(editButton);
   }
 
+  menu.appendChild(replyButton);
   menu.appendChild(copyButton);
   menu.appendChild(removeButton);
   row.appendChild(menu);
@@ -6195,14 +6822,52 @@ function toggleProfileDetailsEdit() {
   profileEditButton.textContent = editing ? "Done" : "Edit";
 }
 
+function toggleFriendProfileEdit() {
+  if (!activeFriendProfile?.isGroup) return;
+  if (!(activeFriendProfile.participants || activeFriendProfile.memberIds || []).includes(firebaseUser?.uid)) return;
+  const editing = !friendProfilePanel.classList.contains("details-editing");
+  friendProfilePanel.classList.toggle("details-editing", editing);
+  friendProfileEditButton.textContent = editing ? "Done" : "Edit";
+}
+
+async function unblockCurrentConversation() {
+  if (!currentConversation?.blockedByMe) return;
+  await setConversationBlockState(currentConversation, false);
+  renderMessages();
+  renderConversations(searchInput.value);
+}
+
 function editPassword() {
   openProfilePasswordDialog();
+}
+
+async function flashCopiedText(node, copiedText = "Copied") {
+  if (!node) return;
+  const previous = node.textContent;
+  const copied = await copyText(previous.trim());
+  node.textContent = copied ? copiedText : "Copy failed";
+  window.setTimeout(() => {
+    node.textContent = previous;
+  }, 1000);
+}
+
+async function copyProfileUsername() {
+  await flashCopiedText(profileUsername);
+}
+
+async function copyProfileNumber() {
+  await flashCopiedText(document.querySelector("#profileNumber"));
+}
+
+async function copyFriendProfileUsername() {
+  await flashCopiedText(friendProfileUsername);
 }
 
 function startGelButtonDrag(event) {
   const button = event.target.closest("button");
   if (!button || button.disabled) return;
   if (button.classList.contains("conversation") || button.closest(".chat-list")) return;
+  if (event.target.closest(".password-change-action")) return;
 
   activeGelButton = button;
   gelStartX = event.clientX;
@@ -6251,6 +6916,8 @@ jumpBottomButton.addEventListener("click", () => {
 messages.addEventListener("scroll", updateJumpBottomButton);
 loginForm.addEventListener("submit", handleLogin);
 signupForm.addEventListener("submit", handleSignup);
+loginNumber.addEventListener("input", () => enforceAuthNumberLimit(loginNumber));
+signupNumber.addEventListener("input", () => enforceAuthNumberLimit(signupNumber));
 signupCodePasteButton.addEventListener("click", pasteSignupCode);
 codeNoteButton.addEventListener("click", showVerificationCodeNote);
 signupPhotoButton.addEventListener("click", () => signupPhotoInput.click());
@@ -6294,7 +6961,11 @@ adminUsersButton.addEventListener("click", openAdminUsers);
 adminUsersCloseButton.addEventListener("click", closeAdminUsers);
 generateCodesButton.addEventListener("click", regenerateExpiredCodes);
 profileButton.addEventListener("click", () => openProfile(myProfile));
-chatAvatar.addEventListener("click", () => openFriendProfile(currentConversation));
+function openCurrentChatProfile() {
+  if (currentConversation) openFriendProfile(currentConversation);
+}
+chatAvatarWrap.addEventListener("click", openCurrentChatProfile);
+chatTitle.addEventListener("click", openCurrentChatProfile);
 profileBackdrop.addEventListener("click", closeProfile);
 profileCloseButton.addEventListener("click", closeProfile);
 profileEditButton.addEventListener("click", toggleProfileDetailsEdit);
@@ -6319,22 +6990,68 @@ profileNameInput.addEventListener("keydown", (event) => {
 });
 profileDetails.addEventListener("click", (event) => {
   const button = event.target.closest("[data-profile-field]");
+  if (button?.dataset.profileField === "username" && !profilePanel.classList.contains("details-editing")) {
+    copyProfileUsername();
+    return;
+  }
+  if (button?.dataset.profileField === "number" && !profilePanel.classList.contains("details-editing")) {
+    copyProfileNumber();
+    return;
+  }
   if (button && profilePanel.classList.contains("details-editing")) editProfileField(button);
   const passwordButton = event.target.closest("[data-password-action]");
   if (passwordButton) editPassword(passwordButton);
 });
+const passwordChangeAction = document.querySelector(".password-change-action");
+passwordChangeAction?.addEventListener("pointerdown", (event) => {
+  event.stopPropagation();
+});
+passwordChangeAction?.addEventListener("click", (event) => {
+  event.preventDefault();
+  event.stopPropagation();
+  editPassword();
+});
 profileLogoutButton.addEventListener("click", logout);
+blockedComposerUnblock.addEventListener("click", unblockCurrentConversation);
 seeAllFriendsButton.addEventListener("click", openAllFriends);
 friendsCloseButton.addEventListener("click", closeAllFriends);
 friendProfileCloseButton.addEventListener("click", closeFriendProfile);
+friendProfileEditButton.addEventListener("click", toggleFriendProfileEdit);
 friendProfileNumber.closest("button")?.addEventListener("click", copyFriendProfileNumber);
+friendProfileBio.closest("section")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-group-field]");
+  if (!button) return;
+  if (button.dataset.groupField === "username" && !canEditActiveGroup()) {
+    copyFriendProfileUsername();
+    return;
+  }
+  editActiveGroupField(button);
+});
 friendPhotoWrap.addEventListener("click", () => {
   if (!activeFriendProfile?.isGroup) return;
-  const admins = activeFriendProfile.admins || [activeFriendProfile.adminId];
-  if (!admins.includes(firebaseUser?.uid)) return;
+  if (!friendProfilePanel.classList.contains("details-editing")) return;
+  if (!(activeFriendProfile.participants || activeFriendProfile.memberIds || []).includes(firebaseUser?.uid)) return;
   profilePhotoInput.click();
 });
+friendProfilePhotoButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  friendPhotoWrap.click();
+});
 friendProfileName.addEventListener("click", editActiveGroupName);
+friendProfileNameButton.addEventListener("click", (event) => {
+  event.stopPropagation();
+  editActiveGroupName();
+});
+friendProfileNameInput.addEventListener("blur", saveActiveGroupName);
+friendProfileNameInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    saveActiveGroupName();
+  }
+  if (event.key === "Escape") {
+    friendProfileName.closest(".profile-name-row")?.classList.remove("editing");
+  }
+});
 groupMembersSeeMoreButton.addEventListener("click", openAllGroupMembers);
 friendProfileMessageButton.addEventListener("click", messageActiveFriendProfile);
 friendProfileBlockButton.addEventListener("click", blockActiveFriend);
@@ -6350,6 +7067,8 @@ friendProfilePasswordButton.addEventListener("click", () => {
 });
 friendProfileDeleteButton.addEventListener("click", deleteActiveFriendProfile);
 chatOptionsButton.addEventListener("click", toggleChatOptions);
+chatAddMemberButton.addEventListener("click", addMemberToCurrentGroup);
+chatGroupRequestsButton.addEventListener("click", openGroupRequests);
 muteChatButton.addEventListener("click", toggleMuteChat);
 clearChatButton.addEventListener("click", clearChat);
 attachmentButton?.addEventListener("click", toggleAttachmentMenu);
@@ -6402,6 +7121,13 @@ document.addEventListener("click", (event) => {
   if (Date.now() < suppressGelClickUntil && !event.target.closest(".conversation")) {
     event.preventDefault();
     event.stopPropagation();
+  }
+}, true);
+
+document.addEventListener("pointerdown", (event) => {
+  const activeActions = document.querySelector(".message-actions.active");
+  if (activeActions && !activeActions.contains(event.target)) {
+    closeMessageActions();
   }
 }, true);
 
@@ -6476,8 +7202,9 @@ document.addEventListener("pointermove", moveGelButtonDrag);
 document.addEventListener("pointerup", endGelButtonDrag);
 document.addEventListener("pointercancel", endGelButtonDrag);
 
-window.addEventListener("popstate", () => {
+window.addEventListener("popstate", (event) => {
   if (desktopQuery.matches || allowBrowserBackExit) return;
+  event.preventDefault();
   handlePhoneBackNavigation().finally(() => {
     pushAppBackTrap();
   });

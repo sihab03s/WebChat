@@ -24,18 +24,18 @@
       <div class="auth-card">
         <div class="auth-brand">
           <span>WebChat</span>
-          <strong id="authTitle">Login</strong>
+          <strong id="authTitle" aria-hidden="true"></strong>
         </div>
 
         <form class="auth-form active" id="loginForm">
           <label>
             <span>Number</span>
-            <input id="loginNumber" type="text" inputmode="numeric" autocomplete="username" placeholder="0">
+            <input id="loginNumber" type="text" inputmode="numeric" autocomplete="username" placeholder="+8801700000000">
           </label>
           <label>
             <span>Password</span>
             <span class="password-wrap">
-              <input id="loginPassword" type="password" autocomplete="current-password" placeholder="0">
+              <input id="loginPassword" type="password" autocomplete="current-password" placeholder="123456">
               <button class="password-toggle" type="button" aria-label="Show password"></button>
             </span>
           </label>
@@ -49,19 +49,19 @@
           </label>
           <label>
             <span>Number</span>
-            <input id="signupNumber" type="text" inputmode="numeric" autocomplete="username" placeholder="Phone number">
+            <input id="signupNumber" type="text" inputmode="numeric" autocomplete="username" placeholder="+8801700000000">
           </label>
           <label>
             <span>Password</span>
             <span class="password-wrap">
-              <input id="signupPassword" type="password" autocomplete="new-password" placeholder="Password">
+              <input id="signupPassword" type="password" autocomplete="new-password" placeholder="123456">
               <button class="password-toggle" type="button" aria-label="Show password"></button>
             </span>
           </label>
           <label>
             <span>Confirm password</span>
             <span class="password-wrap">
-              <input id="signupConfirmPassword" type="password" autocomplete="new-password" placeholder="Confirm password">
+              <input id="signupConfirmPassword" type="password" autocomplete="new-password" placeholder="123456">
               <button class="password-toggle" type="button" aria-label="Show password"></button>
             </span>
           </label>
@@ -117,7 +117,7 @@
         <div class="user-finder-panel" id="userFinderPanel" aria-hidden="true">
           <label>
             <span>Search by number</span>
-            <input id="userSearchNumber" type="text" inputmode="numeric" placeholder="Enter number">
+            <input id="userSearchNumber" type="text" inputmode="text" placeholder="Enter number or @username">
           </label>
           <button id="userSearchButton" type="button">Search</button>
           <p id="userSearchMessage"></p>
@@ -159,8 +159,11 @@
         <div class="chat-options-wrap">
           <button class="icon-button more-button" id="chatOptionsButton" type="button" aria-label="More chat options">
             <span aria-hidden="true"></span>
+            <small class="group-request-badge" id="groupRequestBadge" hidden>0</small>
           </button>
           <div class="chat-options-menu" id="chatOptionsMenu" aria-hidden="true">
+            <button type="button" id="chatAddMemberButton" hidden>Add member</button>
+            <button type="button" id="chatGroupRequestsButton" hidden>Requests</button>
             <button type="button" id="muteChatButton">Mute</button>
             <button type="button" id="clearChatButton">Clear chat</button>
           </div>
@@ -220,6 +223,10 @@
           <button type="button">❤️</button>
           <button type="button">🔥</button>
         </div>
+        <div class="blocked-composer" id="blockedComposer" hidden>
+          <span>This chat is blocked.</span>
+          <button type="button" id="blockedComposerUnblock">Unblock</button>
+        </div>
       </form>
     </section>
 
@@ -259,9 +266,10 @@
             <span>Number</span>
             <strong id="profileNumber"></strong>
           </button>
-          <button type="button" data-password-action="change">
+          <button class="profile-password-row" type="button">
             <span>Password</span>
-            <strong>Change</strong>
+            <strong class="password-dots" aria-label="Password hidden">••••••••</strong>
+            <em class="password-change-action">Change</em>
           </button>
         </section>
 
@@ -293,24 +301,28 @@
         <header class="profile-header">
           <h2>Profile</h2>
           <button class="icon-button profile-back-button" id="friendProfileCloseButton" type="button" aria-label="Back">&lt;</button>
+          <button class="profile-edit-toggle" id="friendProfileEditButton" type="button" hidden>Edit</button>
         </header>
 
         <section class="profile-hero">
           <span class="friend-photo-wrap" id="friendPhotoWrap">
             <img class="profile-photo" id="friendProfilePhoto" alt="">
+            <button class="photo-edit-button" id="friendProfilePhotoButton" type="button" aria-label="Change group photo"></button>
           </span>
           <h3 class="profile-name-row">
             <span id="friendProfileName"></span>
+            <input class="profile-name-input" id="friendProfileNameInput" type="text" aria-label="Group name">
+            <button class="name-edit-button" id="friendProfileNameButton" type="button" aria-label="Change group name"></button>
           </h3>
           <p id="friendProfileStatus"></p>
         </section>
 
         <section class="profile-details" aria-label="Friend profile details">
-          <button type="button">
+          <button type="button" data-group-field="bio">
             <span>Bio</span>
             <strong id="friendProfileBio"></strong>
           </button>
-          <button type="button">
+          <button type="button" data-group-field="username">
             <span>Username</span>
             <strong id="friendProfileUsername"></strong>
           </button>
