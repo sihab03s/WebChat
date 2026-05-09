@@ -8,6 +8,7 @@
   --brand-dark: #055fca;
   --incoming: #f0f2f5;
   --shadow: 0 24px 70px rgba(18, 24, 38, 0.18);
+  --app-height: 100dvh;
 }
 
 * {
@@ -216,14 +217,40 @@ button.gel-returning {
 }
 
 .auth-form label {
+  position: relative;
   display: grid;
-  gap: 7px;
+  gap: 0;
 }
 
-.auth-form label span {
+.auth-form label > span:first-child {
+  position: absolute;
+  left: 14px;
+  top: 14px;
+  z-index: 2;
+  max-width: calc(100% - 28px);
+  padding: 0 4px;
+  border-radius: 999px;
+  background: transparent;
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
+  line-height: 1.35;
+  pointer-events: none;
+  transition:
+    top 160ms ease,
+    left 160ms ease,
+    font-size 160ms ease,
+    color 160ms ease,
+    background 160ms ease;
+}
+
+.auth-form label:focus-within > span:first-child,
+.auth-form label:has(input:not(:placeholder-shown)) > span:first-child {
+  top: -8px;
+  left: 12px;
+  background: #f8fafc;
+  color: var(--brand);
+  font-size: 12px;
 }
 
 .auth-form input {
@@ -249,7 +276,7 @@ button.gel-returning {
 }
 
 .paste-wrap input {
-  padding-right: 72px;
+  padding-right: 52px;
 }
 
 .password-toggle,
@@ -292,18 +319,12 @@ button.gel-returning {
   transform: translateY(-50%);
 }
 
-.label-with-note {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  width: 100%;
-  box-sizing: border-box;
-  padding-right: 14px;
-}
-
 .code-note-button {
-  display: inline-grid;
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  z-index: 4;
+  display: grid;
   place-items: center;
   width: 18px;
   height: 18px;
@@ -313,6 +334,17 @@ button.gel-returning {
   font-size: 12px;
   font-weight: 900;
   line-height: 1;
+  transform: translateY(-50%);
+}
+
+.code-note-button:hover,
+.code-note-button:focus-visible {
+  transform: translateY(-50%) scale(1.08);
+  box-shadow: 0 8px 18px rgba(8, 119, 255, 0.18);
+}
+
+.code-note-button:active {
+  transform: translateY(-50%) scale(1.04);
 }
 
 .signup-complete {
@@ -2123,7 +2155,8 @@ button.gel-returning {
   grid-template-columns: 1fr 42px;
   gap: 8px;
   align-items: center;
-  padding: 10px 12px 12px;
+  padding: 12px 12px 14px;
+  min-height: 70px;
   border-top: 1px solid var(--line);
   background: var(--surface);
 }
@@ -2821,7 +2854,9 @@ button.gel-returning {
   display: none;
   place-items: center;
   padding: 22px;
-  background: rgba(18, 24, 38, 0.24);
+  background: rgba(18, 24, 38, 0.18);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
 }
 
 .confirm-overlay.active {
@@ -2833,12 +2868,16 @@ button.gel-returning {
   display: grid;
   gap: 10px;
   padding: 18px;
-  border-radius: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  background: rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(22px) saturate(1.35);
-  -webkit-backdrop-filter: blur(22px) saturate(1.35);
-  box-shadow: 0 24px 70px rgba(18, 24, 38, 0.22);
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.62);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.72), rgba(220, 239, 255, 0.46)),
+    rgba(255, 255, 255, 0.38);
+  backdrop-filter: blur(28px) saturate(1.55);
+  -webkit-backdrop-filter: blur(28px) saturate(1.55);
+  box-shadow:
+    0 24px 70px rgba(18, 24, 38, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.75);
 }
 
 .password-reset-dialog {
@@ -2861,6 +2900,43 @@ button.gel-returning {
   color: var(--muted);
   font-size: 14px;
   font-weight: 700;
+}
+
+.verification-note-dialog {
+  transform-origin: 92% 92%;
+  animation: noteBubbleOut 220ms cubic-bezier(0.2, 1.22, 0.28, 1) both;
+}
+
+.verification-note-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.verification-note-heading button {
+  min-width: 74px;
+  height: 38px;
+  border-radius: 12px;
+  background: rgba(8, 119, 255, 0.14);
+  color: var(--brand);
+  font-weight: 900;
+}
+
+.verification-note-heading button:hover,
+.verification-note-heading button:focus-visible {
+  transform: scale(1.04);
+}
+
+@keyframes noteBubbleOut {
+  from {
+    opacity: 0;
+    transform: translate(62px, 74px) scale(0.18);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
 }
 
 .group-dialog label {
@@ -3831,9 +3907,9 @@ button.gel-returning {
     position: fixed;
     inset: 0;
     width: 100vw;
-    height: 100dvh;
-    min-height: 100dvh;
-    max-height: 100dvh;
+    height: var(--app-height);
+    min-height: var(--app-height);
+    max-height: var(--app-height);
     box-shadow: none;
     border-radius: 0;
     overflow: hidden;
@@ -3850,6 +3926,19 @@ button.gel-returning {
   .chat-header,
   .composer {
     flex: 0 0 auto;
+  }
+
+  .chat-header {
+    position: sticky;
+    top: 0;
+    z-index: 8;
+    background: var(--surface);
+  }
+
+  .composer {
+    position: sticky;
+    bottom: 0;
+    z-index: 8;
   }
 
   .messages {

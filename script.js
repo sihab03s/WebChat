@@ -846,7 +846,7 @@ function setPasswordToggleIcon(toggle, showing) {
   svg.setAttribute("viewBox", "0 0 24 24");
   svg.setAttribute("aria-hidden", "true");
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("d", showing ? passwordEyePaths.visible : passwordEyePaths.hidden);
+  path.setAttribute("d", showing ? passwordEyePaths.hidden : passwordEyePaths.visible);
   svg.appendChild(path);
   toggle.appendChild(svg);
   toggle.classList.toggle("showing", showing);
@@ -903,14 +903,61 @@ async function reserveAdminCode(adminCode, number) {
 
 function showVerificationCodeNote() {
   const phoneNumber = "01747219338";
-  showConfirmDialog({
-    title: "Verification code",
-    message: `To receive your verification code, please call ${phoneNumber}. You will get the code via an automated voice call.`,
-    highlightTextValue: phoneNumber,
-    copyTextValue: phoneNumber,
-    copyButtonText: "Copy",
-    confirmText: "OK"
+  if (activeConfirmDialog) activeConfirmDialog.remove();
+  closeConversationMenu();
+  confirmOpenedAt = Date.now();
+
+  const overlay = document.createElement("section");
+  overlay.className = "confirm-overlay active verification-note-overlay";
+  overlay.setAttribute("aria-hidden", "false");
+
+  const dialog = document.createElement("article");
+  dialog.className = "confirm-dialog verification-note-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+
+  const header = document.createElement("div");
+  header.className = "verification-note-heading";
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Verification code";
+
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Copy";
+
+  const text = document.createElement("p");
+  text.append(
+    document.createTextNode("To receive your verification code, please call "),
+    Object.assign(document.createElement("span"), {
+      className: "confirm-highlight",
+      textContent: phoneNumber
+    }),
+    document.createTextNode(". You will get the code via an automated voice call.")
+  );
+
+  const close = () => {
+    overlay.remove();
+    activeConfirmDialog = null;
+    confirmOpenedAt = 0;
+  };
+
+  dialog.addEventListener("click", (event) => event.stopPropagation());
+  copyButton.addEventListener("click", async () => {
+    const copied = await copyText(phoneNumber);
+    copyButton.textContent = copied ? "Copied" : "Copy failed";
+    window.setTimeout(() => {
+      copyButton.textContent = "Copy";
+    }, 1400);
   });
+  overlay.addEventListener("click", close);
+
+  header.append(heading, copyButton);
+  dialog.append(header, text);
+  overlay.appendChild(dialog);
+  phoneShell.appendChild(overlay);
+  activeConfirmDialog = overlay;
+  copyButton.focus();
 }
 
 function createResetField(labelText, input) {
@@ -4803,7 +4850,7 @@ function openConversation(id, allowSeen = true) {
   subscribeToPresence(currentConversation);
   renderMessages();
   refreshConversationRowsState();
-  if (!desktopQuery.matches) {
+  if (desktopQuery.matches) {
     messageInput.focus();
   }
 }
@@ -6918,7 +6965,7 @@ loginForm.addEventListener("submit", handleLogin);
 signupForm.addEventListener("submit", handleSignup);
 loginNumber.addEventListener("input", () => enforceAuthNumberLimit(loginNumber));
 signupNumber.addEventListener("input", () => enforceAuthNumberLimit(signupNumber));
-signupCodePasteButton.addEventListener("click", pasteSignupCode);
+signupCodePasteButton?.addEventListener("click", pasteSignupCode);
 codeNoteButton.addEventListener("click", showVerificationCodeNote);
 signupPhotoButton.addEventListener("click", () => signupPhotoInput.click());
 signupPhotoInput.addEventListener("change", updateSignupPhoto);
@@ -7217,6 +7264,16 @@ document.addEventListener("visibilitychange", () => {
 });
 
 window.addEventListener("online", flushOutgoingQueue);
+
+function updateMobileViewportHeight() {
+  const height = window.visualViewport?.height || window.innerHeight;
+  document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+}
+
+updateMobileViewportHeight();
+window.addEventListener("resize", updateMobileViewportHeight);
+window.visualViewport?.addEventListener("resize", updateMobileViewportHeight);
+window.visualViewport?.addEventListener("scroll", updateMobileViewportHeight);
 
 messageForm.addEventListener("submit", (event) => {
   event.preventDefault();
