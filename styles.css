@@ -3971,7 +3971,8 @@ button.gel-returning {
 
   .phone-shell {
     position: fixed;
-    inset: 0;
+    top: var(--app-top, 0px);
+    left: 0;
     width: 100vw;
     height: var(--app-height);
     min-height: var(--app-height);
@@ -3995,16 +3996,18 @@ button.gel-returning {
   }
 
   .chat-header {
-    position: sticky;
-    top: 0;
+    position: relative;
     z-index: 8;
     background: var(--surface);
   }
 
   .composer {
-    position: sticky;
-    bottom: 0;
+    position: relative;
     z-index: 8;
+    touch-action: manipulation;
+    overscroll-behavior: none;
+    -webkit-user-select: none;
+    user-select: none;
   }
 
   .messages {
@@ -4013,7 +4016,8 @@ button.gel-returning {
     overscroll-behavior: contain;
     -webkit-overflow-scrolling: touch;
   }
-}
+
+ }
 
 @media (min-width: 760px) {
   body {

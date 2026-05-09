@@ -2447,7 +2447,8 @@ async function subscribeToMyChats() {
       if (data.hiddenBy?.[ownerUid]) return null;
       if (data.type === "group") {
         const updatedAt = Math.max(data.updatedAt?.toMillis?.() || 0, localConversationOrder.get(chatDoc.id) || 0);
-        const localLast = readLocalMessages(ownerUid, chatDoc.id).at(-1);
+        const localMessages = readLocalMessages(ownerUid, chatDoc.id);
+        const localLast = localMessages.at(-1);
         const remoteLastMessage = data.hiddenLastBy?.[ownerUid]?.text || data.lastMessage || "";
         const remoteLastSender = data.hiddenLastBy?.[ownerUid]?.senderId ?? data.lastSenderId ?? "";
         const isOpenChat = currentConversation?.chatId === chatDoc.id;
@@ -2456,8 +2457,8 @@ async function subscribeToMyChats() {
         if (hiddenAt && remoteLastSender !== ownerUid && updatedAt > hiddenAt) showConversationLocally(ownerUid, chatDoc.id);
         return {
           ...groupToConversation(chatDoc.id, data),
-          messages: [],
-          messagesLoaded: false,
+          messages: localMessages,
+          messagesLoaded: !!localMessages.length,
           lastMessage: localLast?.text || remoteLastMessage,
           lastSenderId: remoteLastSender,
           seenBy: data.seenBy || {},
@@ -2480,7 +2481,8 @@ async function subscribeToMyChats() {
       if (!userSnapshot.exists()) return null;
       const otherUser = normalizeUserDoc(otherUid, userSnapshot.data());
       const updatedAt = Math.max(data.updatedAt?.toMillis?.() || 0, localConversationOrder.get(chatDoc.id) || 0);
-      const localLast = readLocalMessages(ownerUid, chatDoc.id).at(-1);
+      const localMessages = readLocalMessages(ownerUid, chatDoc.id);
+      const localLast = localMessages.at(-1);
       const remoteLastMessage = data.hiddenLastBy?.[ownerUid]?.text || data.lastMessage || "";
       const remoteLastSender = data.hiddenLastBy?.[ownerUid]?.senderId ?? data.lastSenderId ?? "";
       const isOpenChat = currentConversation?.chatId === chatDoc.id;
@@ -2497,8 +2499,8 @@ async function subscribeToMyChats() {
         ...userToConversation(otherUser, chatDoc.id, {
           time: data.hiddenLastBy?.[ownerUid]?.time || data.lastTime || "Now"
         }),
-        messages: [],
-        messagesLoaded: false,
+        messages: localMessages,
+        messagesLoaded: !!localMessages.length,
         lastMessage: localLast?.text || remoteLastMessage,
         lastSenderId: remoteLastSender,
         seenBy: data.seenBy || {},
@@ -2832,6 +2834,18 @@ function readLocalMessages(uid, chatId) {
   } catch (error) {
     return [];
   }
+}
+
+function hydrateConversationFromLocalCache(conversation, uid = firebaseUser?.uid) {
+  if (!uid || !conversation?.chatId || conversation.messagesLoaded) return false;
+  const cachedMessages = readLocalMessages(uid, conversation.chatId);
+  if (!cachedMessages.length) return false;
+  conversation.messages = cachedMessages;
+  conversation.messagesLoaded = true;
+  applySeenState(conversation);
+  applyDeliveryState(conversation);
+  applyConversationReactions(conversation);
+  return true;
 }
 
 function writeLocalMessages(uid, chatId, messagesList) {
@@ -5217,7 +5231,8 @@ function openConversation(id, allowSeen = true) {
   });
   seenAllowedChatId = allowSeen ? currentConversation.chatId : null;
   closeMessageActions();
-  messages.innerHTML = "";
+  hydrateConversationFromLocalCache(currentConversation);
+  if (!currentConversation.messagesLoaded) messages.innerHTML = "";
   currentConversation.unread = 0;
   setConversationUnread(currentConversation, 0).catch(() => {});
   if (currentConversation.chatId) {
@@ -7716,8 +7731,17 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("online", flushOutgoingQueue);
 
 function updateMobileViewportHeight() {
-  const height = window.visualViewport?.height || window.innerHeight;
+  const viewport = window.visualViewport;
+  const height = viewport?.height || window.innerHeight;
+  const top = viewport?.offsetTop || 0;
+  document.documentElement.style.setProperty("--app-top", `${Math.round(top)}px`);
   document.documentElement.style.setProperty("--app-height", `${Math.round(height)}px`);
+  if (document.activeElement === messageInput && currentConversation) {
+    window.requestAnimationFrame(() => {
+      forceMessagesScrollBottom = true;
+      scrollMessagesToBottom();
+    });
+  }
 }
 
 updateMobileViewportHeight();
@@ -7753,6 +7777,17 @@ searchInput.addEventListener("input", (event) => {
 });
 
 messageInput.addEventListener("input", updateComposerMode);
+messageInput.addEventListener("focus", () => {
+  window.setTimeout(() => {
+    forceMessagesScrollBottom = true;
+    scrollMessagesToBottom();
+  }, 120);
+});
+
+messageForm.addEventListener("touchmove", (event) => {
+  if (event.target.closest(".reply-preview, .emoji-menu, .voice-draft, .photo-draft")) return;
+  event.preventDefault();
+}, { passive: false });
 
 desktopQuery.addEventListener("change", () => {
   if (phoneShell.classList.contains("auth-pending")) return;
