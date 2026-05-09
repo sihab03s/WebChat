@@ -263,6 +263,7 @@ const blockedComposerText = blockedComposer?.querySelector("span");
 const blockedComposerUnblock = document.querySelector("#blockedComposerUnblock");
 const messageInput = document.querySelector("#messageInput");
 const messageInputWrap = document.querySelector(".message-input-wrap");
+const inlineComposeActions = document.querySelector(".inline-compose-actions");
 const replyPreview = document.querySelector("#replyPreview");
 const replyPreviewName = document.querySelector("#replyPreviewName");
 const replyPreviewText = document.querySelector("#replyPreviewText");
@@ -384,6 +385,8 @@ let pendingLoginNumber = "";
 let notificationStatePrimed = false;
 let startOnHomeAfterLogin = false;
 let notificationPermissionAsked = false;
+let pendingInitialRestoreReveal = false;
+let initialRestoreRevealTimer = null;
 let voiceRecorder = null;
 let voiceChunks = [];
 let voiceStream = null;
@@ -476,22 +479,160 @@ function normalizeBangladeshPhoneNumber(number) {
 
 function maxBangladeshPhoneDigits(digits) {
   if (digits.startsWith("880")) return 13;
-  if (digits.startsWith("1")) return 10;
   if (digits.startsWith("0")) return 11;
   return 13;
 }
 
-function enforceAuthNumberLimit(input) {
-  const digits = String(input.value || "").replace(/\D/g, "");
+function filterDigitsByPrefixes(digits, prefixes) {
+  let nextDigits = "";
+  for (const digit of digits) {
+    const candidate = `${nextDigits}${digit}`;
+    const allowed = prefixes.some((prefix) => {
+      return prefix.startsWith(candidate) || candidate.startsWith(prefix);
+    });
+    if (allowed) nextDigits = candidate;
+  }
+  return nextDigits;
+}
+
+function hasInvalidBangladeshMobileOperator(digits) {
+  if (/^01/.test(digits) && digits.length >= 3) return !/^01[3-9]/.test(digits);
+  if (/^8801/.test(digits) && digits.length >= 5) return !/^8801[3-9]/.test(digits);
+  return false;
+}
+
+function sanitizeAuthNumberInput(value, { allowShortDemo = false } = {}) {
+  const rawValue = String(value || "").trim();
+  const hasCountryPlus = rawValue.startsWith("+");
+  const rawDigits = rawValue.replace(/\D/g, "");
+  if (allowShortDemo && !hasCountryPlus && /^[01]$/.test(rawDigits)) return rawDigits;
+  let digits = "";
+  for (const digit of filterDigitsByPrefixes(rawDigits, hasCountryPlus ? ["8801"] : ["01", "8801"])) {
+    const candidate = `${digits}${digit}`;
+    if (hasInvalidBangladeshMobileOperator(candidate)) continue;
+    digits = candidate;
+  }
   const maxDigits = maxBangladeshPhoneDigits(digits);
-  const nextValue = digits.slice(0, maxDigits);
+  const nextDigits = digits.slice(0, maxDigits);
+  return hasCountryPlus ? `+${nextDigits}` : nextDigits;
+}
+
+function enforceAuthNumberLimit(input, options = {}) {
+  const previousValue = input.value;
+  const nextValue = sanitizeAuthNumberInput(previousValue, options);
   input.value = nextValue;
-  if (digits.length <= maxDigits) return;
+  if (nextValue === previousValue) return;
+  flashAuthInputWarning(input);
+  if (previousValue.replace(/\D/g, "").length > nextValue.replace(/\D/g, "").length) {
+    setAuthMessage("Use a valid phone number format.");
+  }
+}
+
+function normalizeAuthNumberField(input, allowShortDemo = false) {
+  const rawValue = String(input.value || "").trim();
+  const normalized = normalizeBangladeshPhoneNumber(rawValue);
+  if (normalized) {
+    input.value = normalized;
+    return normalized;
+  }
+  const cleanValue = normalizePhoneNumber(rawValue);
+  if (allowShortDemo && (cleanValue === "0" || cleanValue === "1")) {
+    input.value = cleanValue;
+    return cleanValue;
+  }
+  return "";
+}
+
+function numberForAccountLookup(input, allowAnyNumber = false) {
+  const normalized = normalizeAuthNumberField(input, allowAnyNumber);
+  if (normalized) return normalized;
+  return "";
+}
+
+async function accountExistsForNumber(number) {
+  const cleanNumber = normalizePhoneNumber(number);
+  if (!cleanNumber) return false;
+  const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(cleanNumber)));
+  if (numberSnapshot.exists()) return true;
+  const usersSnapshot = await getDocs(query(collection(db, "users"), where("number", "==", cleanNumber)));
+  return !!usersSnapshot.docs[0];
+}
+
+function flashAuthInputWarning(input, persist = false) {
+  if (persist) input.classList.add("input-error");
   input.classList.remove("input-warning");
   void input.offsetWidth;
   input.classList.add("input-warning");
-  setAuthMessage("Number beshi hoye geche");
-  window.setTimeout(() => input.classList.remove("input-warning"), 320);
+  window.setTimeout(() => input.classList.remove("input-warning"), 420);
+}
+
+async function warnLoginNumberIfMissing() {
+  const number = numberForAccountLookup(loginNumber, true);
+  if (!number) {
+    if (loginNumber.value.trim()) {
+      setAuthMessage("Enter a valid phone number.");
+      flashAuthInputWarning(loginNumber, true);
+      return true;
+    }
+    return false;
+  }
+  if (number === "0" || number === "1") return false;
+  try {
+    if (await accountExistsForNumber(number)) return false;
+    setAuthMessage("No account found with this number.");
+    flashAuthInputWarning(loginNumber, true);
+    return true;
+  } catch (error) {
+    console.warn("Login number check failed", error);
+    return false;
+  }
+}
+
+async function warnSignupNumberIfExists() {
+  const number = numberForAccountLookup(signupNumber, true);
+  if (!number) {
+    if (signupNumber.value.trim()) {
+      setAuthMessage("Enter a valid phone number.");
+      flashAuthInputWarning(signupNumber, true);
+      return true;
+    }
+    return false;
+  }
+  try {
+    if (!(await accountExistsForNumber(number))) return false;
+    setAuthMessage("This number is already registered.");
+    flashAuthInputWarning(signupNumber, true);
+    return true;
+  } catch (error) {
+    console.warn("Signup number check failed", error);
+    return false;
+  }
+}
+
+function warnSignupPasswordMismatch() {
+  if (!signupConfirmPassword.value) return false;
+  if (signupPassword.value === signupConfirmPassword.value) {
+    if (authMessage.textContent === "Passwords do not match.") setAuthMessage("");
+    signupConfirmPassword.classList.remove("input-warning");
+    signupConfirmPassword.classList.remove("input-error");
+    return false;
+  }
+  setAuthMessage("Passwords do not match.");
+  flashAuthInputWarning(signupConfirmPassword, true);
+  return true;
+}
+
+function warnSignupPasswordTooShort() {
+  if (!signupPassword.value) return false;
+  if (signupPassword.value.length >= 6) {
+    if (authMessage.textContent === "Password must be at least 6 characters.") setAuthMessage("");
+    signupPassword.classList.remove("input-warning");
+    signupPassword.classList.remove("input-error");
+    return false;
+  }
+  setAuthMessage("Password must be at least 6 characters.");
+  flashAuthInputWarning(signupPassword, true);
+  return true;
 }
 
 function sanitizeUserSearchValue(value) {
@@ -722,6 +863,13 @@ function readUiState() {
   }
 }
 
+function revealAppAfterInitialRestore() {
+  pendingInitialRestoreReveal = false;
+  window.clearTimeout(initialRestoreRevealTimer);
+  initialRestoreRevealTimer = null;
+  phoneShell.classList.remove("auth-pending");
+}
+
 function updateChatEmptyState() {
   chatScreen.classList.toggle("empty-chat", !currentConversation);
 }
@@ -740,39 +888,48 @@ function restoreUiState() {
   restoredUiState = true;
 
   const state = readUiState();
-  if (!state?.view || state.view === "home") return;
+  if (!state?.view || state.view === "home") {
+    revealAppAfterInitialRestore();
+    return;
+  }
 
   if (state.view === "chat") {
     const conversation = findConversationForState(state);
     if (conversation) openConversation(conversation.id, true);
+    revealAppAfterInitialRestore();
     return;
   }
 
   if (state.view === "profile") {
     openProfile(myProfile);
+    revealAppAfterInitialRestore();
     return;
   }
 
   if (state.view === "friends") {
     openProfile(myProfile);
     openAllFriends();
+    revealAppAfterInitialRestore();
     return;
   }
 
   if (state.view === "friendProfile") {
     const conversation = findConversationForState(state);
     if (conversation) openFriendProfile(conversation);
+    revealAppAfterInitialRestore();
     return;
   }
 
   if (state.view === "saved") {
     openSavedView(state.type || "archived");
+    revealAppAfterInitialRestore();
     return;
   }
 
   if (state.view === "adminUsers" && isAdminAccount()) {
     openAdminUsers();
   }
+  revealAppAfterInitialRestore();
 }
 
 function seedAuthUsers() {
@@ -815,7 +972,7 @@ function setAuthMessage(message, isSuccess = false, showReset = false) {
     const resetButton = document.createElement("button");
     resetButton.type = "button";
     resetButton.className = "forgot-password-link";
-    resetButton.textContent = "Forget now";
+    resetButton.textContent = "Forgot password?";
     resetButton.addEventListener("click", openPasswordResetDialog);
     authMessage.append(text, resetButton);
     return;
@@ -960,10 +1117,64 @@ function showVerificationCodeNote() {
   copyButton.focus();
 }
 
+function showResetVerificationCodeNote(phoneNumber = "01747219338") {
+  document.querySelector(".reset-note-overlay")?.remove();
+  confirmOpenedAt = Date.now();
+
+  const overlay = document.createElement("section");
+  overlay.className = "confirm-overlay active verification-note-overlay reset-note-overlay";
+  overlay.setAttribute("aria-hidden", "false");
+
+  const dialog = document.createElement("article");
+  dialog.className = "confirm-dialog verification-note-dialog";
+  dialog.setAttribute("role", "dialog");
+  dialog.setAttribute("aria-modal", "true");
+
+  const header = document.createElement("div");
+  header.className = "verification-note-heading";
+
+  const heading = document.createElement("h3");
+  heading.textContent = "Verification code";
+
+  const copyButton = document.createElement("button");
+  copyButton.type = "button";
+  copyButton.textContent = "Copy";
+
+  const text = document.createElement("p");
+  text.append(
+    document.createTextNode("To receive your verification code, please call "),
+    Object.assign(document.createElement("span"), {
+      className: "confirm-highlight",
+      textContent: phoneNumber
+    }),
+    document.createTextNode(". You will get the code via an automated voice call.")
+  );
+
+  const close = () => overlay.remove();
+  dialog.addEventListener("click", (event) => event.stopPropagation());
+  copyButton.addEventListener("click", async () => {
+    const copied = await copyText(phoneNumber);
+    copyButton.textContent = copied ? "Copied" : "Copy failed";
+    window.setTimeout(() => {
+      copyButton.textContent = "Copy";
+    }, 1400);
+  });
+  overlay.addEventListener("click", close);
+
+  header.append(heading, copyButton);
+  dialog.append(header, text);
+  overlay.appendChild(dialog);
+  phoneShell.appendChild(overlay);
+  copyButton.focus();
+}
+
 function createResetField(labelText, input) {
   const label = document.createElement("label");
+  label.className = "floating-reset-field";
   const span = document.createElement("span");
   span.textContent = labelText;
+  const fieldInput = input.matches?.("input") ? input : input.querySelector?.("input");
+  if (fieldInput) fieldInput.placeholder = " ";
   label.append(span, input);
   return label;
 }
@@ -1002,16 +1213,19 @@ function openPasswordResetDialog() {
   const supportNumber = "01747219338";
 
   const codeLabel = document.createElement("label");
+  codeLabel.className = "floating-reset-field";
   const labelRow = document.createElement("span");
-  labelRow.className = "label-with-note reset-label-note";
   labelRow.textContent = "Admin verification code";
+  const codeWrap = document.createElement("span");
+  codeWrap.className = "paste-wrap reset-code-wrap";
   const noteButton = document.createElement("button");
   noteButton.type = "button";
   noteButton.className = "code-note-button";
   noteButton.textContent = "!";
   noteButton.setAttribute("aria-label", "Verification code note");
-  labelRow.appendChild(noteButton);
-  codeLabel.append(labelRow, codeInput);
+  codeWrap.append(codeInput, noteButton);
+  codeInput.placeholder = " ";
+  codeLabel.append(labelRow, codeWrap);
 
   const notePanel = document.createElement("div");
   notePanel.className = "reset-code-note";
@@ -1033,8 +1247,9 @@ function openPasswordResetDialog() {
     }, 1400);
   });
   notePanel.append(noteText, noteCopy);
-  noteButton.addEventListener("click", () => {
-    notePanel.hidden = !notePanel.hidden;
+  noteButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    showResetVerificationCodeNote(supportNumber);
   });
 
   const message = document.createElement("p");
@@ -1054,12 +1269,58 @@ function openPasswordResetDialog() {
     activeConfirmDialog = null;
     confirmOpenedAt = 0;
   };
+  const warnResetPasswordTooShort = () => {
+    if (!newPassword.value) return false;
+    if (newPassword.value.length >= 6) {
+      if (message.textContent === "Password must be at least 6 characters.") message.textContent = "";
+      newPassword.classList.remove("input-error", "input-warning");
+      return false;
+    }
+    message.textContent = "Password must be at least 6 characters.";
+    flashAuthInputWarning(newPassword, true);
+    return true;
+  };
+  const warnResetPasswordMismatch = () => {
+    if (!confirmPassword.value) return false;
+    if (newPassword.value === confirmPassword.value) {
+      if (message.textContent === "Passwords do not match.") message.textContent = "";
+      confirmPassword.classList.remove("input-error", "input-warning");
+      return false;
+    }
+    message.textContent = "Passwords do not match.";
+    flashAuthInputWarning(confirmPassword, true);
+    return true;
+  };
 
   cancelButton.addEventListener("click", close);
+  newPassword.addEventListener("input", () => {
+    newPassword.classList.remove("input-error");
+    if (message.textContent === "Password must be at least 6 characters.") message.textContent = "";
+  });
+  newPassword.addEventListener("blur", warnResetPasswordTooShort);
+  confirmPassword.addEventListener("focus", warnResetPasswordTooShort);
+  confirmPassword.addEventListener("pointerdown", warnResetPasswordTooShort);
+  confirmPassword.addEventListener("input", () => {
+    confirmPassword.classList.remove("input-error");
+    if (message.textContent === "Passwords do not match.") message.textContent = "";
+  });
+  confirmPassword.addEventListener("blur", warnResetPasswordMismatch);
+  codeInput.addEventListener("focus", () => {
+    warnResetPasswordTooShort();
+    warnResetPasswordMismatch();
+  });
+  codeInput.addEventListener("pointerdown", () => {
+    warnResetPasswordTooShort();
+    warnResetPasswordMismatch();
+  });
   resetButton.addEventListener("click", async () => {
     resetButton.disabled = true;
     message.classList.remove("success");
     message.textContent = "";
+    if (warnResetPasswordTooShort() || warnResetPasswordMismatch()) {
+      resetButton.disabled = false;
+      return;
+    }
     try {
       await resetPasswordWithAdminCode({
         number: normalizePhoneNumber(loginNumber.value),
@@ -1069,9 +1330,9 @@ function openPasswordResetDialog() {
       });
       close();
     } catch (error) {
-      if (error.message === "invalid-code") message.textContent = "Admin verification code thik na";
-      else if (error.message === "used-code") message.textContent = "Ei admin code already used/expired";
-      else message.textContent = error.message || "Password reset hoy nai";
+      if (error.message === "invalid-code") message.textContent = "Invalid admin verification code.";
+      else if (error.message === "used-code") message.textContent = "This admin code is already used or expired.";
+      else message.textContent = error.message || "Password reset could not be completed.";
       resetButton.disabled = false;
     }
   });
@@ -1082,7 +1343,6 @@ function openPasswordResetDialog() {
     createResetField("New password", createPasswordField(newPassword)),
     createResetField("Confirm password", createPasswordField(confirmPassword)),
     codeLabel,
-    notePanel,
     message,
     actions
   );
@@ -1128,7 +1388,7 @@ function openProfilePasswordDialog() {
   const forgotButton = document.createElement("button");
   forgotButton.type = "button";
   forgotButton.className = "forgot-password-link password-dialog-forgot";
-  forgotButton.textContent = "Forget password";
+  forgotButton.textContent = "Forgot password?";
 
   const message = document.createElement("p");
   message.className = "reset-message";
@@ -1154,14 +1414,65 @@ function openProfilePasswordDialog() {
     if (!loginNumber.value.trim()) loginNumber.value = myProfile.number || currentUser.number || "";
     openPasswordResetDialog();
   });
+  const warnNewPasswordTooShort = () => {
+    if (!newInput.value) return false;
+    if (newInput.value.length >= 6) {
+      if (message.textContent === "Password must be at least 6 characters.") message.textContent = "";
+      newInput.classList.remove("input-error", "input-warning");
+      return false;
+    }
+    message.textContent = "Password must be at least 6 characters.";
+    flashAuthInputWarning(newInput, true);
+    return true;
+  };
+  const warnConfirmPasswordMismatch = () => {
+    if (!confirmInput.value) return false;
+    if (newInput.value === confirmInput.value) {
+      if (message.textContent === "Passwords do not match.") message.textContent = "";
+      confirmInput.classList.remove("input-error", "input-warning");
+      return false;
+    }
+    message.textContent = "Passwords do not match.";
+    flashAuthInputWarning(confirmInput, true);
+    return true;
+  };
+  newInput.addEventListener("input", () => {
+    newInput.classList.remove("input-error");
+    if (message.textContent === "Password must be at least 6 characters.") message.textContent = "";
+  });
+  newInput.addEventListener("blur", warnNewPasswordTooShort);
+  newInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    confirmInput.focus();
+    warnNewPasswordTooShort();
+  });
+  confirmInput.addEventListener("focus", warnNewPasswordTooShort);
+  confirmInput.addEventListener("pointerdown", warnNewPasswordTooShort);
+  confirmInput.addEventListener("input", () => {
+    confirmInput.classList.remove("input-error");
+    if (message.textContent === "Passwords do not match.") message.textContent = "";
+  });
+  confirmInput.addEventListener("blur", warnConfirmPasswordMismatch);
+  confirmInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    warnConfirmPasswordMismatch();
+  });
   saveButton.addEventListener("click", async () => {
     message.textContent = "";
     if (!currentInput.value || !newInput.value || !confirmInput.value) {
-      message.textContent = "Current, new ar confirm password dao";
+      message.textContent = "Wrong your current password.";
+      flashAuthInputWarning(currentInput, true);
+      return;
+    }
+    if (newInput.value.length < 6) {
+      warnNewPasswordTooShort();
       return;
     }
     if (newInput.value !== confirmInput.value) {
-      message.textContent = "Confirm password match kore nai";
+      message.textContent = "Passwords do not match.";
+      flashAuthInputWarning(confirmInput, true);
       return;
     }
 
@@ -1174,7 +1485,7 @@ function openProfilePasswordDialog() {
       close();
       window.alert("Password changed");
     } catch (error) {
-      message.textContent = "Current password thik na ba abar login kore try koro";
+      message.textContent = "Current password is incorrect. Sign in again if needed.";
       saveButton.disabled = false;
     }
   });
@@ -1479,7 +1790,7 @@ async function createAuthAccountWithoutSwitching(email, password) {
   });
   const data = await response.json();
   if (!response.ok) {
-    throw new Error(data.error?.message || "Auth account create hoy nai");
+    throw new Error(data.error?.message || "Auth account could not be created.");
   }
   return {
     uid: data.localId,
@@ -1488,10 +1799,10 @@ async function createAuthAccountWithoutSwitching(email, password) {
 }
 
 async function changeUserPasswordAsAdmin(user, password, confirmPassword) {
-  if (!isAdminAccount()) throw new Error("Admin account lagbe");
-  if (!user?.uid || !user.number) throw new Error("User pawa jay nai");
-  if (!password || !confirmPassword) throw new Error("New password ar confirm password dao");
-  if (password !== confirmPassword) throw new Error("Confirm password match kore nai");
+  if (!isAdminAccount()) throw new Error("Admin access is required.");
+  if (!user?.uid || !user.number) throw new Error("User not found.");
+  if (!password || !confirmPassword) throw new Error("Enter the new password and confirmation.");
+  if (password !== confirmPassword) throw new Error("Passwords do not match.");
 
   const number = normalizePhoneNumber(user.number);
   const oldUid = user.uid;
@@ -1528,12 +1839,12 @@ async function changeUserPasswordAsAdmin(user, password, confirmPassword) {
 
 async function resetPasswordWithAdminCode({ number, password, confirmPassword, adminCode }) {
   number = normalizePhoneNumber(number);
-  if (!number) throw new Error("Number dao");
-  if (!password || !confirmPassword || !adminCode) throw new Error("New password, confirm password ar admin code lagbe");
-  if (password !== confirmPassword) throw new Error("Confirm password match kore nai");
+  if (!number) throw new Error("Enter your phone number.");
+  if (!password || !confirmPassword || !adminCode) throw new Error("Enter the new password, confirmation, and admin code.");
+  if (password !== confirmPassword) throw new Error("Passwords do not match.");
 
   const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(number)));
-  if (!numberSnapshot.exists()) throw new Error("Ei number diye account nai");
+  if (!numberSnapshot.exists()) throw new Error("No account found with this number.");
   const numberData = numberSnapshot.data();
   const oldUid = numberData.uid;
   const oldProfileSnapshot = oldUid ? await getDoc(doc(db, "users", oldUid)) : null;
@@ -1597,6 +1908,17 @@ function completeLogin(user) {
   adminUsersButton.classList.toggle("active", user.number === "0");
   authScreen.classList.remove("active");
   authScreen.setAttribute("aria-hidden", "true");
+  const savedState = manualLogin ? null : readUiState();
+  const shouldDelayInitialReveal = !!savedState?.view && savedState.view !== "home";
+  pendingInitialRestoreReveal = shouldDelayInitialReveal;
+  window.clearTimeout(initialRestoreRevealTimer);
+  initialRestoreRevealTimer = null;
+  if (shouldDelayInitialReveal) {
+    phoneShell.classList.add("auth-pending");
+    initialRestoreRevealTimer = window.setTimeout(revealAppAfterInitialRestore, 3500);
+  } else {
+    revealAppAfterInitialRestore();
+  }
   homeScreen.classList.add("active");
   chatScreen.classList.remove("active");
   phoneShell.classList.remove("chat-open");
@@ -1642,7 +1964,7 @@ async function clearCurrentUserSession(uid) {
   }
 }
 
-async function forceLogoutForNewLogin(message = "Ei account onno jaygay login hoyeche") {
+async function forceLogoutForNewLogin(message = "This account was signed in on another device.") {
   const oldSessionId = currentSessionId;
   if (unsubscribeUserSession) unsubscribeUserSession();
   unsubscribeUserSession = null;
@@ -1671,7 +1993,7 @@ async function setupSingleUserSession(uid) {
   unsubscribeUserSession = onValue(sessionRef, (snapshot) => {
     const session = snapshot.val();
     if (!session?.sessionId || session.sessionId === currentSessionId) return;
-    forceLogoutForNewLogin(session.deleted ? "Ei account delete kora hoyeche" : undefined);
+    forceLogoutForNewLogin(session.deleted ? "This account has been deleted." : undefined);
   });
 }
 
@@ -1688,6 +2010,9 @@ function resetSessionView(showLogin = false) {
   presenceStatusCache.clear();
   lastNotificationKeys.clear();
   notificationStatePrimed = false;
+  pendingInitialRestoreReveal = false;
+  window.clearTimeout(initialRestoreRevealTimer);
+  initialRestoreRevealTimer = null;
   unsubscribeChats = null;
   unsubscribeMessages = null;
   unsubscribePresence = null;
@@ -1760,11 +2085,12 @@ async function handleLogin(event) {
   event.preventDefault();
   requestSystemNotificationPermission();
   setAuthLoading(loginSubmitButton, true);
-  const number = normalizeBangladeshPhoneNumber(loginNumber.value) || normalizePhoneNumber(loginNumber.value);
+  const number = numberForAccountLookup(loginNumber, true);
   const password = loginPassword.value;
 
   if (!number || !password) {
-    setAuthMessage("Number ar password dao");
+    setAuthMessage("Enter your number and password.");
+    if (!number) flashAuthInputWarning(loginNumber, true);
     setAuthLoading(loginSubmitButton, false);
     return;
   }
@@ -1798,7 +2124,7 @@ async function handleLogin(event) {
           console.warn("Admin recreate failed", recreateError);
         }
       }
-      setAuthMessage(number === "0" ? "Admin recreate hoy nai. Firebase rules check koro." : "Demo account ready na, abar try koro");
+      setAuthMessage(number === "0" ? "Admin account could not be prepared. Check Firebase rules." : "Demo account is not ready. Please try again.");
       setAuthLoading(loginSubmitButton, false);
     }
   }
@@ -1809,34 +2135,65 @@ async function handleSignup(event) {
   requestSystemNotificationPermission();
   setAuthLoading(signupSubmitButton, true);
   const name = signupName.value.trim();
-  const number = normalizeBangladeshPhoneNumber(signupNumber.value);
+  const number = normalizeAuthNumberField(signupNumber);
   const password = signupPassword.value;
   const confirmPassword = signupConfirmPassword.value;
   const adminCode = normalizeSignupCode(signupAdminCode.value);
 
-  if (!name || !number || !password || !confirmPassword || !adminCode) {
-    setAuthMessage("Name, valid BD number, password ar admin code lagbe");
+  if (!name) {
+    setAuthMessage("Enter your name.");
+    flashAuthInputWarning(signupName, true);
+    setAuthLoading(signupSubmitButton, false);
+    return;
+  }
+
+  if (!number) {
+    setAuthMessage("Enter a valid phone number.");
+    flashAuthInputWarning(signupNumber, true);
+    setAuthLoading(signupSubmitButton, false);
+    return;
+  }
+
+  if (!password) {
+    setAuthMessage("Enter a password.");
+    flashAuthInputWarning(signupPassword, true);
+    setAuthLoading(signupSubmitButton, false);
+    return;
+  }
+
+  if (!confirmPassword) {
+    setAuthMessage("Confirm your password.");
+    flashAuthInputWarning(signupConfirmPassword, true);
+    setAuthLoading(signupSubmitButton, false);
+    return;
+  }
+
+  if (!adminCode) {
+    setAuthMessage("Enter the admin verification code.");
+    flashAuthInputWarning(signupAdminCode, true);
     setAuthLoading(signupSubmitButton, false);
     return;
   }
 
   if (password.length < 6) {
-    setAuthMessage("Password 6 tar kom hole hobe na");
+    setAuthMessage("Password must be at least 6 characters.");
+    flashAuthInputWarning(signupPassword, true);
     setAuthLoading(signupSubmitButton, false);
     return;
   }
 
   if (password !== confirmPassword) {
-    setAuthMessage("Confirm password same hoy nai");
+    setAuthMessage("Passwords do not match.");
+    flashAuthInputWarning(signupConfirmPassword);
     setAuthLoading(signupSubmitButton, false);
     return;
   }
 
   let codeReserved = false;
   try {
-    const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(number)));
-    if (numberSnapshot.exists()) {
-      setAuthMessage("Ei number diye account ache");
+    if (await accountExistsForNumber(number)) {
+      setAuthMessage("This number is already registered.");
+      flashAuthInputWarning(signupNumber, true);
       setAuthLoading(signupSubmitButton, false);
       return;
     }
@@ -1868,13 +2225,13 @@ async function handleSignup(event) {
       }, { merge: true }).catch(() => {});
     }
     if (error.message === "invalid-code") {
-      setAuthMessage("Admin verification code thik na");
+      setAuthMessage("Invalid admin verification code.");
     } else if (error.message === "used-code") {
-      setAuthMessage("Ei admin code already used/expired");
+      setAuthMessage("This admin code is already used or expired.");
     } else if (error.message === "number-exists") {
-      setAuthMessage("Ei number diye account ache");
+      setAuthMessage("This number is already registered.");
     } else {
-      setAuthMessage(error.code === "auth/email-already-in-use" ? "Ei number diye account ache" : "Signup hoy nai");
+      setAuthMessage(error.code === "auth/email-already-in-use" ? "This number is already registered." : "Signup could not be completed.");
     }
     setAuthLoading(signupSubmitButton, false);
   } finally {
@@ -1901,7 +2258,9 @@ async function logout() {
     profileLogoutButton.classList.remove("loading");
     profileLogoutButton.disabled = false;
     resetSessionView(true);
+    loginNumber.value = "";
     loginPassword.value = "";
+    loginNumber.classList.remove("input-error", "input-warning");
     loginNumber.focus();
   }
 }
@@ -1930,7 +2289,6 @@ function initializeAuth() {
     firebaseUser = authUser;
     const cachedProfile = readCachedUserProfile(authUser.uid);
     if (cachedProfile) {
-      phoneShell.classList.remove("auth-pending");
       completeLogin(cachedProfile);
     }
     let profile = await loadUserProfile(authUser.uid);
@@ -1946,7 +2304,6 @@ function initializeAuth() {
       setAuthMessage("Wrong password", false, true);
       return;
     }
-    phoneShell.classList.remove("auth-pending");
     await setupSingleUserSession(authUser.uid);
     if (cachedProfile) {
       refreshLoggedInProfile(profile);
@@ -2800,6 +3157,32 @@ function latestSenderId(conversation) {
   return latest.senderId || (latest.from === "me" ? firebaseUser?.uid : conversation.userId) || "";
 }
 
+function getConversationLastTimeMs(conversation) {
+  const latest = conversation?.messages?.[conversation.messages.length - 1];
+  return latest?.createdAtMs
+    || latest?.localOrder
+    || conversation?.updatedAt
+    || conversation?.lastTimeMs
+    || 0;
+}
+
+function formatConversationTime(conversation) {
+  const timeMs = getConversationLastTimeMs(conversation);
+  if (!timeMs) return conversation?.time || "Now";
+  const now = Date.now();
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const messageStart = new Date(timeMs);
+  messageStart.setHours(0, 0, 0, 0);
+  const dayDiff = Math.floor((todayStart.getTime() - messageStart.getTime()) / (24 * 60 * 60 * 1000));
+
+  if (isSameCalendarDay(timeMs, now)) {
+    return now - timeMs < 60 * 60 * 1000 ? "Now" : formatClockTime(timeMs);
+  }
+  if (dayDiff < 7) return formatWeekday(timeMs);
+  return formatCalendarDate(timeMs);
+}
+
 async function syncVisibleLastMessage(conversation) {
   if (!conversation?.chatId || !firebaseUser) return;
 
@@ -2903,7 +3286,7 @@ function renderConversations(filter = "") {
       meta.className = "conversation-meta";
 
       const time = document.createElement("time");
-      time.textContent = conversation.time;
+      time.textContent = formatConversationTime(conversation);
 
       button.addEventListener("contextmenu", (event) => {
         event.preventDefault();
@@ -2944,7 +3327,7 @@ function refreshConversationRowsState() {
       meta.appendChild(dot);
     } else {
       const time = document.createElement("time");
-      time.textContent = conversation.time;
+      time.textContent = formatConversationTime(conversation);
       meta.appendChild(time);
     }
   });
@@ -3730,7 +4113,7 @@ async function searchUserByNumber() {
 
     const numberSnapshot = await getDoc(doc(db, "numbers", numberDocId(number)));
     if (!numberSnapshot.exists()) {
-      userSearchMessage.textContent = "Ei number-er user pawa jay nai";
+      userSearchMessage.textContent = "No user found with this number.";
       return;
     }
 
@@ -6963,8 +7346,60 @@ jumpBottomButton.addEventListener("click", () => {
 messages.addEventListener("scroll", updateJumpBottomButton);
 loginForm.addEventListener("submit", handleLogin);
 signupForm.addEventListener("submit", handleSignup);
-loginNumber.addEventListener("input", () => enforceAuthNumberLimit(loginNumber));
-signupNumber.addEventListener("input", () => enforceAuthNumberLimit(signupNumber));
+loginNumber.addEventListener("input", () => {
+  enforceAuthNumberLimit(loginNumber, { allowShortDemo: true });
+  loginNumber.classList.remove("input-error");
+  if (authMessage.textContent.startsWith("Wrong password") || authMessage.textContent === "No account found with this number." || authMessage.textContent === "Enter a valid phone number." || authMessage.textContent === "Use a valid phone number format.") setAuthMessage("");
+});
+loginNumber.addEventListener("blur", warnLoginNumberIfMissing);
+loginNumber.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  loginPassword.focus();
+  warnLoginNumberIfMissing();
+});
+loginPassword.addEventListener("focus", warnLoginNumberIfMissing);
+loginPassword.addEventListener("pointerdown", warnLoginNumberIfMissing);
+signupNumber.addEventListener("input", () => {
+  enforceAuthNumberLimit(signupNumber);
+  signupNumber.classList.remove("input-error");
+  if (authMessage.textContent === "This number is already registered." || authMessage.textContent === "Enter a valid phone number." || authMessage.textContent === "Use a valid phone number format.") setAuthMessage("");
+});
+signupNumber.addEventListener("blur", warnSignupNumberIfExists);
+signupNumber.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  signupPassword.focus();
+  warnSignupNumberIfExists();
+});
+signupPassword.addEventListener("focus", warnSignupNumberIfExists);
+signupPassword.addEventListener("pointerdown", warnSignupNumberIfExists);
+signupPassword.addEventListener("input", () => {
+  signupPassword.classList.remove("input-error");
+  if (authMessage.textContent === "Password must be at least 6 characters.") setAuthMessage("");
+});
+signupPassword.addEventListener("blur", warnSignupPasswordTooShort);
+signupPassword.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  signupConfirmPassword.focus();
+  warnSignupPasswordTooShort();
+});
+signupConfirmPassword.addEventListener("focus", warnSignupPasswordTooShort);
+signupConfirmPassword.addEventListener("pointerdown", warnSignupPasswordTooShort);
+signupConfirmPassword.addEventListener("input", () => {
+  signupConfirmPassword.classList.remove("input-error");
+  if (authMessage.textContent === "Passwords do not match.") setAuthMessage("");
+});
+signupConfirmPassword.addEventListener("blur", warnSignupPasswordMismatch);
+signupConfirmPassword.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  signupAdminCode.focus();
+  warnSignupPasswordMismatch();
+});
+signupAdminCode.addEventListener("focus", warnSignupPasswordMismatch);
+signupAdminCode.addEventListener("pointerdown", warnSignupPasswordMismatch);
 signupCodePasteButton?.addEventListener("click", pasteSignupCode);
 codeNoteButton.addEventListener("click", showVerificationCodeNote);
 signupPhotoButton.addEventListener("click", () => signupPhotoInput.click());
@@ -6980,7 +7415,7 @@ authSwitchButton.addEventListener("click", async () => {
     } catch (error) {
       showAuthMode("login");
       loginNumber.value = credentials.number || "";
-      setAuthMessage("Login korte parlam na, password diye login koro");
+      setAuthMessage("Could not sign in automatically. Please enter your password.");
     } finally {
       authSwitchButton.disabled = false;
     }
@@ -7133,6 +7568,21 @@ voiceButton.addEventListener("click", startVoiceRecording);
 fileButton?.addEventListener("click", () => fileInput.click());
 photoInput.addEventListener("change", () => sendAttachment(photoInput, "Photo"));
 fileInput?.addEventListener("change", () => sendAttachment(fileInput, "File"));
+inlineComposeActions?.addEventListener("pointerdown", (event) => {
+  if (event.target.closest("button")) return;
+  event.preventDefault();
+  event.stopPropagation();
+});
+inlineComposeActions?.addEventListener("touchstart", (event) => {
+  if (event.target.closest("button")) return;
+  event.preventDefault();
+  event.stopPropagation();
+}, { passive: false });
+inlineComposeActions?.addEventListener("click", (event) => {
+  if (event.target.closest("button")) return;
+  event.preventDefault();
+  event.stopPropagation();
+});
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && profileOverlay.classList.contains("active")) {

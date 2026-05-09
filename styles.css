@@ -403,9 +403,15 @@ button.gel-returning {
   box-shadow: 0 0 0 3px rgba(8, 119, 255, 0.12);
 }
 
-.auth-form input.input-warning {
+.auth-form input.input-warning,
+.password-reset-dialog input.input-warning {
   border-color: #ff3b30;
   animation: inputWarn 260ms ease;
+}
+
+.auth-form input.input-error,
+.password-reset-dialog input.input-error {
+  border-color: #ff3b30;
 }
 
 @keyframes inputWarn {
@@ -488,8 +494,9 @@ button.gel-returning {
 }
 
 .password-dialog-forgot {
-  justify-self: start;
+  justify-self: end;
   margin-top: -2px;
+  text-align: right;
 }
 
 .auth-message.hidden {
@@ -2268,16 +2275,26 @@ button.gel-returning {
 
 .message-input-wrap {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   min-width: 0;
+  height: 40px;
+  border-radius: 18px;
+  background: #f0f2f5;
 }
 
 .inline-compose-actions {
-  position: absolute;
-  top: 50%;
-  right: 6px;
+  position: relative;
+  z-index: 3;
   display: flex;
+  justify-content: flex-end;
   gap: 2px;
-  transform: translateY(-50%) scale(1);
+  width: 108px;
+  height: 36px;
+  padding: 2px 6px 2px 2px;
+  border-radius: 999px;
+  transform: scale(1);
   transition: transform 180ms ease, opacity 160ms ease;
 }
 
@@ -2320,7 +2337,7 @@ button.gel-returning {
 .composer.has-text .inline-compose-actions {
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-50%) scale(0.85);
+  transform: scale(0.85);
 }
 
 .composer.voice-mode .inline-compose-actions {
@@ -2393,8 +2410,8 @@ button.gel-returning {
   border: 0;
   outline: 0;
   border-radius: 18px;
-  background: #f0f2f5;
-  padding: 0 118px 0 14px;
+  background: transparent;
+  padding: 0 14px;
   color: var(--ink);
 }
 
@@ -2902,6 +2919,10 @@ button.gel-returning {
   font-weight: 700;
 }
 
+.password-reset-dialog .reset-message {
+  text-align: center;
+}
+
 .verification-note-dialog {
   transform-origin: 92% 92%;
   animation: noteBubbleOut 220ms cubic-bezier(0.2, 1.22, 0.28, 1) both;
@@ -2990,15 +3011,52 @@ button.gel-returning {
   min-height: 18px;
 }
 
-.password-reset-dialog label {
+.password-reset-dialog label:not(.floating-reset-field) {
   display: grid;
   gap: 7px;
 }
 
-.password-reset-dialog label > span:not(.password-wrap) {
+.password-reset-dialog label:not(.floating-reset-field) > span:not(.password-wrap) {
   color: var(--muted);
   font-size: 13px;
   font-weight: 800;
+}
+
+.password-reset-dialog .floating-reset-field {
+  position: relative;
+  display: grid;
+  gap: 0;
+}
+
+.password-reset-dialog .floating-reset-field > span:first-child {
+  position: absolute;
+  left: 12px;
+  top: 13px;
+  z-index: 2;
+  max-width: calc(100% - 24px);
+  padding: 0 4px;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.35;
+  pointer-events: none;
+  transition:
+    top 160ms ease,
+    left 160ms ease,
+    font-size 160ms ease,
+    color 160ms ease,
+    background 160ms ease;
+}
+
+.password-reset-dialog .floating-reset-field:focus-within > span:first-child,
+.password-reset-dialog .floating-reset-field:has(input:not(:placeholder-shown)) > span:first-child {
+  top: -8px;
+  left: 10px;
+  background: rgba(239, 247, 255, 0.96);
+  color: var(--brand);
+  font-size: 12px;
 }
 
 .password-reset-dialog input {
@@ -3014,6 +3072,10 @@ button.gel-returning {
 }
 
 .password-reset-dialog .password-wrap input {
+  padding-right: 52px;
+}
+
+.password-reset-dialog .reset-code-wrap input {
   padding-right: 52px;
 }
 
@@ -3081,6 +3143,10 @@ button.gel-returning {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
   margin-top: 8px;
+}
+
+.password-reset-dialog .confirm-actions {
+  margin-top: 2px;
 }
 
 .confirm-actions.has-extra {
