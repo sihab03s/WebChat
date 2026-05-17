@@ -419,6 +419,7 @@ const authSessionKey = "webchatCurrentUser";
 const uiStateKey = "webchatUiState";
 const profileCachePrefix = "webchatProfileCache";
 const outgoingQueuePrefix = "webchatOutgoingQueue";
+const adminLoginAlias = "sihab";
 const blankUserAvatar = "data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A//www.w3.org/2000/svg%27%20viewBox%3D%270%200%20200%20200%27%3E%3Crect%20width%3D%27200%27%20height%3D%27200%27%20fill%3D%27%23fff%27/%3E%3Ccircle%20cx%3D%27100%27%20cy%3D%2758%27%20r%3D%2741%27%20fill%3D%27%23bdbdbd%27/%3E%3Cpath%20d%3D%27M37%20171c0-47%2025-74%2063-74s63%2027%2063%2074c0%2017-11%2028-28%2028H65c-17%200-28-11-28-28Z%27%20fill%3D%27%23bdbdbd%27/%3E%3C/svg%3E";
 const defaultAvatar = blankUserAvatar;
 const messageRetentionMs = 30 * 24 * 60 * 60 * 1000;
@@ -503,6 +504,9 @@ function hasInvalidBangladeshMobileOperator(digits) {
 
 function sanitizeAuthNumberInput(value, { allowShortDemo = false } = {}) {
   const rawValue = String(value || "").trim();
+  if (allowShortDemo && /^s/i.test(rawValue)) {
+    return `${rawValue.charAt(0).toUpperCase()}${rawValue.slice(1)}`;
+  }
   const hasCountryPlus = rawValue.startsWith("+");
   const rawDigits = rawValue.replace(/\D/g, "");
   if (allowShortDemo && !hasCountryPlus && /^[01]$/.test(rawDigits)) return rawDigits;
@@ -522,6 +526,7 @@ function enforceAuthNumberLimit(input, options = {}) {
   const nextValue = sanitizeAuthNumberInput(previousValue, options);
   input.value = nextValue;
   if (nextValue === previousValue) return;
+  if (options.allowShortDemo && /^s/i.test(previousValue)) return;
   flashAuthInputWarning(input);
   if (previousValue.replace(/\D/g, "").length > nextValue.replace(/\D/g, "").length) {
     setAuthMessage("Use a valid phone number format.");
@@ -530,6 +535,10 @@ function enforceAuthNumberLimit(input, options = {}) {
 
 function normalizeAuthNumberField(input, allowShortDemo = false) {
   const rawValue = String(input.value || "").trim();
+  if (allowShortDemo && rawValue.toLowerCase() === adminLoginAlias) {
+    input.value = "Sihab";
+    return "0";
+  }
   const normalized = normalizeBangladeshPhoneNumber(rawValue);
   if (normalized) {
     input.value = normalized;
@@ -541,6 +550,10 @@ function normalizeAuthNumberField(input, allowShortDemo = false) {
     return cleanValue;
   }
   return "";
+}
+
+function isAdminLoginAlias(value) {
+  return String(value || "").trim().toLowerCase() === adminLoginAlias;
 }
 
 function numberForAccountLookup(input, allowAnyNumber = false) {
@@ -567,6 +580,7 @@ function flashAuthInputWarning(input, persist = false) {
 }
 
 async function warnLoginNumberIfMissing() {
+  const adminAlias = isAdminLoginAlias(loginNumber.value);
   const number = numberForAccountLookup(loginNumber, true);
   if (!number) {
     if (loginNumber.value.trim()) {
@@ -575,6 +589,11 @@ async function warnLoginNumberIfMissing() {
       return true;
     }
     return false;
+  }
+  if (number === "0" && !adminAlias) {
+    setAuthMessage("No account found with this number.");
+    flashAuthInputWarning(loginNumber, true);
+    return true;
   }
   if (number === "0" || number === "1") return false;
   try {
@@ -1905,7 +1924,7 @@ function completeLogin(user) {
     localStorage.removeItem(uiStorageKey());
     saveUiState({ view: "home" });
   }
-  adminUsersButton.classList.toggle("active", user.number === "0");
+  adminUsersButton.classList.toggle("active", isAdminAccount(user));
   authScreen.classList.remove("active");
   authScreen.setAttribute("aria-hidden", "true");
   const savedState = manualLogin ? null : readUiState();
@@ -1933,7 +1952,7 @@ function completeLogin(user) {
 
 function refreshLoggedInProfile(user) {
   applyUserProfile(user);
-  adminUsersButton.classList.toggle("active", user.number === "0");
+  adminUsersButton.classList.toggle("active", isAdminAccount(user));
   if (profileOverlay.classList.contains("active")) openProfile(myProfile);
 }
 
@@ -2085,6 +2104,7 @@ async function handleLogin(event) {
   event.preventDefault();
   requestSystemNotificationPermission();
   setAuthLoading(loginSubmitButton, true);
+  const adminAlias = isAdminLoginAlias(loginNumber.value);
   const number = numberForAccountLookup(loginNumber, true);
   const password = loginPassword.value;
 
@@ -2095,11 +2115,18 @@ async function handleLogin(event) {
     return;
   }
 
+  if (number === "0" && !adminAlias) {
+    setAuthMessage("No account found with this number.");
+    flashAuthInputWarning(loginNumber, true);
+    setAuthLoading(loginSubmitButton, false);
+    return;
+  }
+
   try {
     pendingLoginNumber = number;
     await signInWithEmailAndPassword(auth, await authEmailForNumber(number), authPassword(password));
   } catch (error) {
-    const isDemo = (number === "0" && password === "0") || (number === "1" && password === "1");
+    const isDemo = (number === "0" && adminAlias && password === "0") || (number === "1" && password === "1");
     if (!isDemo) {
       setAuthMessage("Wrong password", false, true);
       setAuthLoading(loginSubmitButton, false);
@@ -4031,7 +4058,9 @@ function openUserProfile(user, options = {}) {
 }
 
 function isAdminAccount(user = currentUser) {
-  return user?.number === "0";
+  const name = String(user?.profile?.name || user?.name || "").trim().toLowerCase();
+  const username = String(user?.profile?.username || user?.username || "").trim().toLowerCase();
+  return name.startsWith(adminLoginAlias) || username.includes(adminLoginAlias);
 }
 
 function canMessageConversation(conversation) {
@@ -4398,7 +4427,7 @@ async function regenerateExpiredCodes() {
 }
 
 async function openAdminUsers() {
-  if (currentUser?.number !== "0") return;
+  if (!isAdminAccount()) return;
   saveUiState({ view: "adminUsers" });
   adminUsersList.innerHTML = "";
   closeAdminCodes();
@@ -7491,13 +7520,41 @@ profileDetails.addEventListener("click", (event) => {
     copyProfileUsername();
     return;
   }
-  if (button?.dataset.profileField === "number" && !profilePanel.classList.contains("details-editing")) {
-    copyProfileNumber();
+  if (button?.dataset.profileField === "number") {
     return;
   }
   if (button && profilePanel.classList.contains("details-editing")) editProfileField(button);
   const passwordButton = event.target.closest("[data-password-action]");
   if (passwordButton) editPassword(passwordButton);
+});
+
+const profileNumberButton = profileNumber.closest("[data-profile-field='number']");
+let profileNumberHoldTimer = null;
+let profileNumberHoldCopied = false;
+
+function clearProfileNumberHold() {
+  window.clearTimeout(profileNumberHoldTimer);
+  profileNumberHoldTimer = null;
+}
+
+profileNumberButton?.addEventListener("pointerdown", () => {
+  profileNumberHoldCopied = false;
+  clearProfileNumberHold();
+  profileNumberHoldTimer = window.setTimeout(async () => {
+    profileNumberHoldCopied = true;
+    await copyProfileNumber();
+  }, 520);
+});
+
+profileNumberButton?.addEventListener("pointerup", clearProfileNumberHold);
+profileNumberButton?.addEventListener("pointercancel", clearProfileNumberHold);
+profileNumberButton?.addEventListener("pointerleave", clearProfileNumberHold);
+profileNumberButton?.addEventListener("click", (event) => {
+  if (profileNumberHoldCopied) {
+    profileNumberHoldCopied = false;
+  }
+  event.preventDefault();
+  event.stopPropagation();
 });
 const passwordChangeAction = document.querySelector(".password-change-action");
 passwordChangeAction?.addEventListener("pointerdown", (event) => {
